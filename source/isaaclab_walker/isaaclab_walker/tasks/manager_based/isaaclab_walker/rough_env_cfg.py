@@ -136,7 +136,7 @@ class KangarooRewards(RewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", joint_names=["L_HipRoll_Joint"]),
             "target_offset": 0.0,
             # L on +x: pos = abduction(벌림), neg = adduction(오므림)
-            "deadband_pos": 0.3,   # 벌림 허용
+            "deadband_pos": 0.2,   # 벌림 허용
             "deadband_neg": 0.1,   # 오므림 제한
             "stiffness_pos": 1.5,
             "stiffness_neg": 2.5,
@@ -151,27 +151,69 @@ class KangarooRewards(RewardsCfg):
             "target_offset": 0.0,
             # R on +x: pos = adduction(오므림), neg = abduction(벌림) ← L과 반대!
             "deadband_pos": 0.1,   # 오므림 제한
-            "deadband_neg": 0.3,   # 벌림 허용
+            "deadband_neg": 0.2,   # 벌림 허용
             "stiffness_pos": 2.5,
             "stiffness_neg": 1.5,
         },
     )
 
-    # Knee: Walker L/R both -y axis (same axis), range [-2.56, 0], default = -0.76
-    # 같은 축 → L/R 같은 deviation 설정
-    # q_target = default(-0.76) + offset(-0.15) = -0.91
-    # e > 0 (pos): toward extension(과신전) → 강하게 제한
-    # e < 0 (neg): deeper flexion(굴곡) → 넓게 허용
+    # Knee: Walker L/R both -y axis (same axis), range [-2.56, 0], default = 0.0
+    # q_target = default(0.0) + offset(-0.1) = -0.1 (약간 굽힌 상태를 목표)
+    # e = q - (-0.1) = q + 0.1
+    # e > 0 → q > -0.1 (너무 펴짐, -0.1~0.0 구간) → 강하게 페널티
+    # e < 0 → q < -0.1 (굴곡 방향) → 넓게 허용
     joint_deviation_knee = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
         weight=-0.60,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["L_Knee_Joint", "R_Knee_Joint"]),
-            "target_offset": -0.15,
-            "deadband_pos": 0.01,
-            "deadband_neg": 2.0,
-            "stiffness_pos": 5.0,
-            "stiffness_neg": 0.2,
+            "target_offset": -0.1,
+            "deadband_pos": 0.0,    # -0.1 이상(펴짐)은 즉시 페널티
+            "deadband_neg": 1.9,    # -2.0까지 굴곡 허용
+            "stiffness_pos": 5.0,   # 과신전 강하게 제한
+            "stiffness_neg": 0.2,   # 굴곡은 부드럽게
+        },
+    )
+
+    # AnklePitch: L축=-y, R축=+y (반대 축), default=0.0
+    # L: [-0.7, 1.05], R: [-1.05, 0.7]
+    # L -y축: neg방향=발 들림(dorsiflexion), pos방향=발 내림(plantarflexion)
+    # 반대 축이므로 L/R 통합 가능 (같은 부호=같은 물리적 방향)
+    # 보행 시 발이 너무 꺾이지 않도록 양방향 제한
+    joint_deviation_anklepitch = RewTerm(
+        func=mdp.bio_mimetic_soft_hard_constraint,
+        weight=-0.60,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_AnklePitch_Joint", "R_AnklePitch_Joint"]),
+            "target_offset": 0.0,
+            "deadband": 0.2,      # ±0.2 rad (~11도) 까지 자유
+            "stiffness": 3.0,     # 초과 시 페널티
+        },
+    )
+
+    # AnkleRoll: L축=+x, R축=+x (같은 축), default=0.0
+    # L/R: [-0.42, 0.42]
+    # 같은 축 → 물리적 의미 반대 (L: +x=내전, R: +x=외전) → L/R 분리
+    # 발이 안쪽/바깥쪽으로 너무 기울지 않도록 제한
+    joint_deviation_left_ankleroll = RewTerm(
+        func=mdp.bio_mimetic_soft_hard_constraint,
+        weight=-0.60,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_AnkleRoll_Joint"]),
+            "target_offset": 0.0,
+            "deadband": 0.2,      # ±0.2 rad (~11도) 까지 자유
+            "stiffness": 3.0,
+        },
+    )
+
+    joint_deviation_right_ankleroll = RewTerm(
+        func=mdp.bio_mimetic_soft_hard_constraint,
+        weight=-0.60,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["R_AnkleRoll_Joint"]),
+            "target_offset": 0.0,
+            "deadband": 0.2,      # ±0.2 rad (~11도) 까지 자유
+            "stiffness": 3.0,
         },
     )
 
