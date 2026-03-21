@@ -1,11 +1,11 @@
 """
 P73 policy playback with interactive base-velocity GUI + METRIC_DATA streaming.
 
-This file lives inside `isaaclab_p73` to keep all P73-specific tools out of the vanilla `IsaacLab/` repo.
+This file lives inside `isaaclab_walker` to keep all P73-specific tools out of the vanilla `IsaacLab/` repo.
 
 Usage (example):
   # In conda env: p73
-  cd /home/piene/p73/isaaclab_p73 && \\
+  cd /home/piene/p73/isaaclab_walker && \\
   TERM=xterm-256color OMNI_KIT_ACCEPT_EULA=YES PYTHONUNBUFFERED=1 \\
   python scripts/tools/p73_command_control/play_with_teleop_p73.py \\
     --task P73-Flat-Play \\
@@ -95,7 +95,7 @@ import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
 
 import isaaclab_tasks  # noqa: F401, E402
-import isaaclab_p73.tasks  # noqa: F401, E402
+import isaaclab_walker.tasks  # noqa: F401, E402
 
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent  # noqa: E402
 from isaaclab.utils.assets import retrieve_file_path  # noqa: E402
@@ -107,7 +107,7 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 try:
-    from isaaclab_p73.algorithms.rsl_rl import P73OnPolicyRunner as OnPolicyRunner  # type: ignore
+    from isaaclab_walker.algorithms.rsl_rl import P73OnPolicyRunner as OnPolicyRunner  # type: ignore
 
     print("[INFO] Using custom P73OnPolicyRunner")
 except Exception:

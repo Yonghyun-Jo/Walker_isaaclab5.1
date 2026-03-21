@@ -7,7 +7,7 @@ P73 Unified Teleop GUI (IsaacLab 5.1)
 
 Notes
 -----
-This module is intentionally kept inside `isaaclab_p73/` (P73 repo) and should not modify the vanilla `IsaacLab/`.
+This module is intentionally kept inside `isaaclab_walker/` (P73 repo) and should not modify the vanilla `IsaacLab/`.
 We exclude EE pose control by design (per user request).
 """
 

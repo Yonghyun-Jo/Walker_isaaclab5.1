@@ -14,7 +14,7 @@ Notes
 
 Example
 -------
-From the `isaaclab_p73` repo root:
+From the `isaaclab_walker` repo root:
 
     OMNI_KIT_ACCEPT_EULA=YES python scripts/rsl_rl/play.py \\
         --task=P73-Flat-Play --num_envs=1 \\
@@ -64,7 +64,7 @@ import os
 import time
 
 import gymnasium as gym
-import isaaclab_p73.tasks  # noqa: F401
+import isaaclab_walker.tasks  # noqa: F401
 import isaaclab_tasks  # noqa: F401
 import torch
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
@@ -80,7 +80,7 @@ from isaaclab_rl.rsl_rl import (
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from rsl_rl.runners import OnPolicyRunner
 try:
-    from isaaclab_p73.algorithms.rsl_rl import P73OnPolicyRunner as OnPolicyRunner
+    from isaaclab_walker.algorithms.rsl_rl import P73OnPolicyRunner as OnPolicyRunner
     print("[INFO] Using custom P73OnPolicyRunner")
 except ImportError:
     pass

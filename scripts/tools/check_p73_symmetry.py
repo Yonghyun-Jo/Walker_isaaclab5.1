@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import torch
 
 
-REPO_ROOT = Path("/home/piene/p73/isaaclab_p73")
-SYMMETRY_PY = REPO_ROOT / "source/isaaclab_p73/isaaclab_p73/tasks/manager_based/isaaclab_p73/mdp/symmetry.py"
-ROUGH_CFG_PY = REPO_ROOT / "source/isaaclab_p73/isaaclab_p73/tasks/manager_based/isaaclab_p73/rough_env_cfg.py"
+REPO_ROOT = Path("/home/piene/p73/isaaclab_walker")
+SYMMETRY_PY = REPO_ROOT / "source/isaaclab_walker/isaaclab_walker/tasks/manager_based/isaaclab_walker/mdp/symmetry.py"
+ROUGH_CFG_PY = REPO_ROOT / "source/isaaclab_walker/isaaclab_walker/tasks/manager_based/isaaclab_walker/rough_env_cfg.py"
 
 
 def _load_symmetry_module():

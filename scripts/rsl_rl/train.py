@@ -14,7 +14,7 @@ Notes
 
 Example
 -------
-From the `isaaclab_p73` repo root:
+From the `isaaclab_walker` repo root:
 
     OMNI_KIT_ACCEPT_EULA=YES python scripts/rsl_rl/train.py --task=P73-Flat
 """
@@ -88,7 +88,7 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
 from datetime import datetime
 
 import gymnasium as gym
-import isaaclab_p73.tasks  # noqa: F401
+import isaaclab_walker.tasks  # noqa: F401
 import isaaclab_tasks  # noqa: F401
 import torch
 from isaaclab.envs import (
@@ -105,7 +105,7 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 from rsl_rl.runners import OnPolicyRunner
 try:
-    from isaaclab_p73.algorithms.rsl_rl import P73OnPolicyRunner as OnPolicyRunner
+    from isaaclab_walker.algorithms.rsl_rl import P73OnPolicyRunner as OnPolicyRunner
     print("[INFO] Using custom P73OnPolicyRunner")
 except ImportError:
     pass

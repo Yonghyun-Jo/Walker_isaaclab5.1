@@ -41,7 +41,7 @@ from isaaclab.sim import SimulationContext
 ##
 # Pre-defined configs
 ##
-from isaaclab_p73 import P73_CFG  # isort: skip
+from isaaclab_walker import P73_CFG  # isort: skip
 
 
 def design_scene(sim: sim_utils.SimulationContext) -> tuple[list, torch.Tensor]:
