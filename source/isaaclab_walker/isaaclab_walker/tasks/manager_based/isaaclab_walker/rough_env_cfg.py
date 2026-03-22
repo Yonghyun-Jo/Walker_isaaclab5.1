@@ -253,7 +253,7 @@ class KangarooRewards(RewardsCfg):
             ),
             "asset_cfg": SceneEntityCfg("robot"),
             "threshold": 0.45,
-            "velocity_threshold": 0.05,
+            "velocity_threshold": 0.07,
             "stop_cmd_vel_max": 0.05,
             "yaw_threshold_deg": 5.0,
             "pos_threshold_m": 0.02,
