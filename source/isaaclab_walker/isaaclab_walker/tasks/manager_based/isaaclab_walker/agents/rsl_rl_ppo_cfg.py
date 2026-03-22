@@ -84,7 +84,7 @@ class P73RoughPPORunnerFutureCfg(RslRlOnPolicyRunnerCfg):
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
-        # Encoder / latent (TOCABI-style)
+        # Encoder / latent
         encoder_hidden_dims=[512, 512, 256],
         latent_dim=64,
         num_single_obs=47,
