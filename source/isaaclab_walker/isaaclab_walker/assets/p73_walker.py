@@ -30,7 +30,7 @@ init = {
 
 P73_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{P73_ASSETS_DATA_DIR}/p73_walker/p73_walker.usd",
+        usd_path=f"{P73_ASSETS_DATA_DIR}/p73_walker/p73_walker_box.usd",
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,

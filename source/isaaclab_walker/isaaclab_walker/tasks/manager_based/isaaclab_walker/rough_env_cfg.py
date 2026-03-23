@@ -243,7 +243,7 @@ class KangarooRewards(RewardsCfg):
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_biped,
-        weight=0.0,
+        weight=3.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -374,7 +374,7 @@ class KangarooRewards(RewardsCfg):
 
     contact_momentum = RewTerm(
         func=mdp.contact_momentum,
-        weight=-5.0e-4,
+        weight=-4.5e-4,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_Foot_Link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_Foot_Link"),
