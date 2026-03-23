@@ -62,7 +62,7 @@ P73_CFG = ArticulationCfg(
                 ".*_Joint": 0.0,
             },
             damping={
-                ".*_Joint": 0.0,
+                ".*_Joint": 1.0,
             },
             effort_limit_sim={
                 ".*_HipRoll_Joint": 352.0,

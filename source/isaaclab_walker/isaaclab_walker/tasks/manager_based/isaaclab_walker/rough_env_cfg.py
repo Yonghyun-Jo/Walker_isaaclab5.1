@@ -227,7 +227,7 @@ class KangarooRewards(RewardsCfg):
 
     stand_still_joint_deviation = RewTerm(
         func=mdp.stand_still_joint_deviation_l1,
-        weight=-0.8,
+        weight=-1.5,
         params={"command_name": "base_velocity", "command_threshold": 0.07},
     )
 
