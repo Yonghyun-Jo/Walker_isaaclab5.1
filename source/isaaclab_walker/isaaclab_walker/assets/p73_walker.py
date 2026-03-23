@@ -15,14 +15,14 @@ init = {
     "L_HipPitch_Joint": 0.2,
     "L_HipYaw_Joint": 0.0,
     "L_Knee_Joint": 0.2,
-    "L_AnklePitch_Joint": -0.15,
+    "L_AnklePitch_Joint": -0.0,
     "L_AnkleRoll_Joint": 0.0,
     # Right leg (HipRoll -X, HipPitch +Y, Knee -Y, AnklePitch -Y)
     "R_HipRoll_Joint": 0.0,
     "R_HipPitch_Joint": -0.2,
     "R_HipYaw_Joint": 0.0,
     "R_Knee_Joint": -0.2,
-    "R_AnklePitch_Joint": 0.15,
+    "R_AnklePitch_Joint": 0.0,
     "R_AnkleRoll_Joint": 0.0,
     # Waist
     "WaistYaw_Joint": 0.0,

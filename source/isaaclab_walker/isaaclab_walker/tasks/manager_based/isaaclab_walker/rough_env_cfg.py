@@ -225,6 +225,12 @@ class KangarooRewards(RewardsCfg):
         weight=-4.0e-6,
     )
 
+    stand_still_joint_deviation = RewTerm(
+        func=mdp.stand_still_joint_deviation_l1,
+        weight=-0.8,
+        params={"command_name": "base_velocity", "command_threshold": 0.07},
+    )
+
     # === 6. Feet Contact & Stability ==============================================
 
     feet_air_time = RewTerm(

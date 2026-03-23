@@ -109,39 +109,35 @@ def _flip_lowerbody_12_axis_aware(joint_tensor: torch.Tensor) -> torch.Tensor:
       [10] R_AnklePitch_Joint
       [11] R_AnkleRoll_Joint
 
-    Rule from Walker URDF joint axis review:
+    Rule from Walker URDF joint axis review (new URDF with mirrored L/R axes):
       Key: same axis direction → swap only, opposite axis direction → swap + negate
 
       Joint         L axis  R axis  Relation   Rule
-      HipRoll       +x      +x      same       swap only
-      HipPitch      +y      -y      opposite   swap + negate
+      HipRoll       +x      -x      opposite   swap + negate
+      HipPitch      -y      +y      opposite   swap + negate
       HipYaw        -z      -z      same       swap only
-      Knee          -y      -y      same       swap only
-      AnklePitch    -y      +y      opposite   swap + negate
+      Knee          +y      -y      opposite   swap + negate
+      AnklePitch    +y      -y      opposite   swap + negate
       AnkleRoll     +x      +x      same       swap only
-
-    NOTE: p73 4-bar used motor-level axes where HipYaw and KneeUpper had
-    opposite L/R axes → swap+negate. Walker uses direct joint axes where
-    HipYaw and Knee have SAME L/R axes → swap only.
     """
     if joint_tensor.shape[1] != 12:
         raise ValueError(f"Expected 12D lower-body tensor. Got: {joint_tensor.shape}.")
     out = torch.zeros_like(joint_tensor)
 
     # Left -> Right
-    out[:, 6] = joint_tensor[:, 0]     # HipRoll:    swap only     (same axis +x/+x)
-    out[:, 7] = -joint_tensor[:, 1]    # HipPitch:   swap + negate (opposite +y/-y)
+    out[:, 6] = -joint_tensor[:, 0]    # HipRoll:    swap + negate (opposite +x/-x)
+    out[:, 7] = -joint_tensor[:, 1]    # HipPitch:   swap + negate (opposite -y/+y)
     out[:, 8] = joint_tensor[:, 2]     # HipYaw:     swap only     (same axis -z/-z)
-    out[:, 9] = joint_tensor[:, 3]     # Knee:       swap only     (same axis -y/-y)
-    out[:, 10] = -joint_tensor[:, 4]   # AnklePitch: swap + negate (opposite -y/+y)
+    out[:, 9] = -joint_tensor[:, 3]    # Knee:       swap + negate (opposite +y/-y)
+    out[:, 10] = -joint_tensor[:, 4]   # AnklePitch: swap + negate (opposite +y/-y)
     out[:, 11] = joint_tensor[:, 5]    # AnkleRoll:  swap only     (same axis +x/+x)
 
     # Right -> Left
-    out[:, 0] = joint_tensor[:, 6]     # HipRoll:    swap only     (same axis +x/+x)
-    out[:, 1] = -joint_tensor[:, 7]    # HipPitch:   swap + negate (opposite -y/+y)
+    out[:, 0] = -joint_tensor[:, 6]    # HipRoll:    swap + negate (opposite -x/+x)
+    out[:, 1] = -joint_tensor[:, 7]    # HipPitch:   swap + negate (opposite +y/-y)
     out[:, 2] = joint_tensor[:, 8]     # HipYaw:     swap only     (same axis -z/-z)
-    out[:, 3] = joint_tensor[:, 9]     # Knee:       swap only     (same axis -y/-y)
-    out[:, 4] = -joint_tensor[:, 10]   # AnklePitch: swap + negate (opposite +y/-y)
+    out[:, 3] = -joint_tensor[:, 9]    # Knee:       swap + negate (opposite -y/+y)
+    out[:, 4] = -joint_tensor[:, 10]   # AnklePitch: swap + negate (opposite -y/+y)
     out[:, 5] = joint_tensor[:, 11]    # AnkleRoll:  swap only     (same axis +x/+x)
     return out
 
