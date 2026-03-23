@@ -1,8 +1,8 @@
 <?xml version="1.0" ?>
-<robot name="p73_walker">
+<robot name="p73_walker" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
 <material name="silver">
-  <color rgba="0.6 0.6 0.6 1.0"/>
+  <color rgba="0.8 0.8 0.8 1.0"/>
 </material>
 <material name="blue">
   <color rgba="0.0 0.0 1.0 1.0"/>
@@ -12,8 +12,12 @@
 </material>
 
 <mujoco>
-  <compiler discardvisual="false" meshdir="meshes"/>
+  <compiler discardvisual="false" meshdir="../meshes"/> 
 </mujoco>
+
+<xacro:include filename="$(find p73_walker_description)/urdf/materials.xacro" />
+<xacro:include filename="$(find p73_walker_description)/urdf/p73_walker.trans" />
+<xacro:include filename="$(find p73_walker_description)/urdf/p73_walker.gazebo" />
 
 <link name="base_link">
   <inertial>
@@ -24,14 +28,14 @@
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/base_link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="blue"/>
   </visual>
   <collision>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 1.5708 0"/>
     <geometry>
-      <mesh filename="meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      <cylinder radius="0.065" length="0.21"/>
     </geometry>
   </collision>
 </link>
@@ -45,14 +49,20 @@
   <visual>
     <origin xyz="0.0 -0.0 -0.0955" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/WaistYaw_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/WaistYaw_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
-    <origin xyz="0.0 -0.0 -0.0955" rpy="0 0 0"/>
+    <origin xyz="0.0 0.0 0.0385" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/WaistYaw_Link.stl" scale="0.001 0.001 0.001"/>
+      <cylinder radius="0.065" length="0.04"/>
+    </geometry>
+  </collision>
+  <collision>
+    <origin xyz="0.005 0.0 0.28" rpy="0 0 0"/>
+    <geometry>
+      <box size="0.26 0.3 0.4"/>
     </geometry>
   </collision>
 </link>
@@ -66,14 +76,14 @@
   <visual>
     <origin xyz="-0.0155 0.0 -0.0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="blue"/>
   </visual>
   <collision>
     <origin xyz="-0.0155 0.0 -0.0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -87,14 +97,14 @@
   <visual>
     <origin xyz="0.0155 -0.0 -0.0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="blue"/>
   </visual>
   <collision>
     <origin xyz="0.0155 -0.0 -0.0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -108,14 +118,14 @@
   <visual>
     <origin xyz="0.0 0.0805 -0.0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_HipPitch_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_HipPitch_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
-    <origin xyz="0.0 0.0805 -0.0" rpy="0 0 0"/>
+    <origin xyz="0.015 -0.0425 -0.06" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_HipPitch_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.2 0.11 0.26"/>
     </geometry>
   </collision>
 </link>
@@ -129,14 +139,14 @@
   <visual>
     <origin xyz="0.0 -0.0805 -0.0" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_HipPitch_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_HipPitch_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
-    <origin xyz="0.0 -0.0805 -0.0" rpy="0 0 0"/>
+    <origin xyz="0.015 0.0425 -0.06" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_HipPitch_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.2 0.11 0.26"/>
     </geometry>
   </collision>
 </link>
@@ -150,14 +160,14 @@
   <visual>
     <origin xyz="0.0 0.1205 0.202" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_Thigh_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_Thigh_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
-    <origin xyz="0.0 0.1205 0.202" rpy="0 0 0"/>
+    <origin xyz="0.02 0.0 -0.09" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_Thigh_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.2 0.14 0.16"/>
     </geometry>
   </collision>
 </link>
@@ -171,14 +181,14 @@
   <visual>
     <origin xyz="0.0 -0.1205 0.202" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_Thigh_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_Thigh_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
-    <origin xyz="0.0 -0.1205 0.202" rpy="0 0 0"/>
+    <origin xyz="0.02 0.0 -0.09" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_Thigh_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.2 0.14 0.16"/>
     </geometry>
   </collision>
 </link>
@@ -192,14 +202,20 @@
   <visual>
     <origin xyz="0.042753 0.101 0.400462" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_Knee_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_Knee_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
-    <origin xyz="0.042753 0.101 0.400462" rpy="0 0 0"/>
+    <origin xyz="0.055 -0.02 -0.12" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_Knee_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.12 0.12 0.24"/>
+    </geometry>
+  </collision>
+  <collision>
+    <origin xyz="0.045 -0.02 -0.32" rpy="0 0 0"/>
+    <geometry>
+      <box size="0.09 0.08 0.16"/>
     </geometry>
   </collision>
 </link>
@@ -213,14 +229,20 @@
   <visual>
     <origin xyz="0.042753 -0.101 0.400462" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_Knee_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_Knee_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
-    <origin xyz="0.042753 -0.101 0.400462" rpy="0 0 0"/>
+    <origin xyz="0.055 0.02 -0.12" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_Knee_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.12 0.12 0.24"/>
+    </geometry>
+  </collision>
+  <collision>
+    <origin xyz="0.045 0.02 -0.32" rpy="0 0 0"/>
+    <geometry>
+      <box size="0.09 0.08 0.16"/>
     </geometry>
   </collision>
 </link>
@@ -234,14 +256,14 @@
   <visual>
     <origin xyz="-0.000889 -0.0985 0.816317" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
     <origin xyz="-0.000889 -0.0985 0.816317" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -255,14 +277,14 @@
   <visual>
     <origin xyz="-0.000889 0.0985 0.816317" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="white"/>
   </visual>
   <collision>
     <origin xyz="-0.000889 0.0985 0.816317" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_AnkleRoll_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
   </collision>
 </link>
@@ -276,14 +298,20 @@
   <visual>
     <origin xyz="-0.011889 -0.122 0.816317" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_Foot_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/L_Foot_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="blue"/>
   </visual>
   <collision>
-    <origin xyz="-0.011889 -0.122 0.816317" rpy="0 0 0"/>
+    <origin xyz="0.1 0.0 -0.067" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/L_Foot_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.2 0.1 0.02"/>
+    </geometry>
+  </collision>
+  <collision>
+    <origin xyz="-0.03 0.0 -0.067" rpy="0 0 0"/>
+    <geometry>
+      <box size="0.06 0.1 0.02"/>
     </geometry>
   </collision>
 </link>
@@ -297,14 +325,20 @@
   <visual>
     <origin xyz="-0.011889 0.122 0.816317" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_Foot_Link.stl" scale="0.001 0.001 0.001"/>
+      <mesh filename="../meshes/R_Foot_Link.stl" scale="0.001 0.001 0.001"/>
     </geometry>
     <material name="blue"/>
   </visual>
   <collision>
-    <origin xyz="-0.011889 0.122 0.816317" rpy="0 0 0"/>
+    <origin xyz="0.1 0.0 -0.067" rpy="0 0 0"/>
     <geometry>
-      <mesh filename="meshes/R_Foot_Link.stl" scale="0.001 0.001 0.001"/>
+      <box size="0.2 0.1 0.02"/>
+    </geometry>
+  </collision>
+  <collision>
+    <origin xyz="-0.03 0.0 -0.067" rpy="0 0 0"/>
+    <geometry>
+      <box size="0.06 0.1 0.02"/>
     </geometry>
   </collision>
 </link>
@@ -321,15 +355,15 @@
   <origin xyz="0.0155 0.0 0.0" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="R_HipRoll_Link"/>
-  <axis xyz="1.0 -0.0 0.0"/>
-  <limit lower="-0.3" upper="0.58" velocity="10" effort="352.0"/>
+  <axis xyz="-1.0 0.0 0.0"/>
+  <limit lower="-0.58" upper="0.3" velocity="10" effort="352.0"/>
 </joint>
 
 <joint name="L_HipRoll_Joint" type="revolute">
   <origin xyz="-0.0155 0.0 0.0" rpy="0 0 0"/>
   <parent link="base_link"/>
   <child link="L_HipRoll_Link"/>
-  <axis xyz="1.0 -0.0 0.0"/>
+  <axis xyz="1.0 0.0 0.0"/>
   <limit lower="-0.58" upper="0.3" velocity="10" effort="352.0"/>
 </joint>
 
@@ -337,16 +371,16 @@
   <origin xyz="-0.0155 -0.0805 0.0" rpy="0 0 0"/>
   <parent link="R_HipRoll_Link"/>
   <child link="R_HipPitch_Link"/>
-  <axis xyz="-0.0 -1.0 -0.0"/>
-  <limit lower="-1.57" upper="2.09" velocity="10" effort="220.0"/>
+  <axis xyz="-0.0 1.0 -0.0"/>
+  <limit lower="-2.09" upper="1.57" velocity="10" effort="220.0"/>
 </joint>
 
 <joint name="L_HipPitch_Joint" type="revolute">
   <origin xyz="0.0155 0.0805 0.0" rpy="0 0 0"/>
   <parent link="L_HipRoll_Link"/>
   <child link="L_HipPitch_Link"/>
-  <axis xyz="-0.0 1.0 -0.0"/>
-  <limit lower="-2.09" upper="1.57" velocity="10" effort="220.0"/>
+  <axis xyz="-0.0 -1.0 -0.0"/>
+  <limit lower="-1.57" upper="2.09" velocity="10" effort="220.0"/>
 </joint>
 
 <joint name="R_HipYaw_Joint" type="revolute">
@@ -377,24 +411,24 @@
   <origin xyz="-0.042753 -0.0195 -0.198462" rpy="0 0 0"/>
   <parent link="L_Thigh_Link"/>
   <child link="L_Knee_Link"/>
-  <axis xyz="0.0 -1.0 -0.0"/>
-  <limit lower="-2.56" upper="0" velocity="10" effort="220.0"/>
+  <axis xyz="0.0 1.0 -0.0"/>
+  <limit lower="0" upper="2.56" velocity="10" effort="220.0"/>
 </joint>
 
 <joint name="L_AnklePitch_Joint" type="revolute">
   <origin xyz="0.043642 -0.0025 -0.415855" rpy="0 0 0"/>
   <parent link="L_Knee_Link"/>
   <child link="L_AnkleRoll_Link"/>
-  <axis xyz="0.0 -1.0 -0.0"/>
-  <limit lower="-0.7" upper="1.05" velocity="10" effort="95"/>
+  <axis xyz="0.0 1.0 -0.0"/>
+  <limit lower="-1.05" upper="0.7" velocity="10" effort="95"/>
 </joint>
 
 <joint name="R_AnklePitch_Joint" type="revolute">
   <origin xyz="0.043642 0.0025 -0.415855" rpy="0 0 0"/>
   <parent link="R_Knee_Link"/>
   <child link="R_AnkleRoll_Link"/>
-  <axis xyz="0.0 1.0 -0.0"/>
-  <limit lower="-1.05" upper="0.7" velocity="10" effort="95"/>
+  <axis xyz="0.0 -1.0 -0.0"/>
+  <limit lower="-0.7" upper="1.05" velocity="10" effort="95"/>
 </joint>
 
 <joint name="L_AnkleRoll_Joint" type="revolute">

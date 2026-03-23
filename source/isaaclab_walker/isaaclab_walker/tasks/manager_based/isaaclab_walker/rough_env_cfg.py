@@ -126,16 +126,15 @@ class KangarooRewards(RewardsCfg):
         },
     )
 
-    # HipRoll: Walker L/R both +x axis (same axis)
-    # On +x: L = abduction(벌림), R = adduction(오므림) → 물리적 의미 반대
-    # → L/R 분리하여 각각의 물리적 방향에 맞게 설정
-    joint_deviation_left_hiproll = RewTerm(
+    # HipRoll: New URDF — L axis +x, R axis -x (mirrored)
+    # Both: pos = abduction(벌림), neg = adduction(오므림) in their own frame
+    # → L/R 통합 가능 (같은 부호 = 같은 물리적 방향)
+    joint_deviation_hiproll = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
         weight=-1.0,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_HipRoll_Joint"]),
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_HipRoll_Joint", "R_HipRoll_Joint"]),
             "target_offset": 0.0,
-            # L on +x: pos = abduction(벌림), neg = adduction(오므림)
             "deadband_pos": 0.2,   # 벌림 허용
             "deadband_neg": 0.1,   # 오므림 제한
             "stiffness_pos": 1.5,
@@ -143,30 +142,30 @@ class KangarooRewards(RewardsCfg):
         },
     )
 
-    joint_deviation_right_hiproll = RewTerm(
-        func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-1.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["R_HipRoll_Joint"]),
-            "target_offset": 0.0,
-            # R on +x: pos = adduction(오므림), neg = abduction(벌림) ← L과 반대!
-            "deadband_pos": 0.1,   # 오므림 제한
-            "deadband_neg": 0.2,   # 벌림 허용
-            "stiffness_pos": 2.5,
-            "stiffness_neg": 1.5,
-        },
-    )
-
-    # Knee: Walker L/R both -y axis (same axis), range [-2.56, 0], default = -0.2
-    # q_target = default(-0.2) + offset(0.0) = -0.2
-    # e = q - (-0.2) = q + 0.2
-    # e > 0.05 → q > -0.15 (너무 펴짐) → 강하게 페널티
-    # e < -1.8 → q < -2.0 (과도한 굴곡) → 부드럽게 페널티
-    joint_deviation_knee = RewTerm(
+    # Knee: New URDF — L axis +y range [0, 2.56] default=0.2, R axis -y range [-2.56, 0] default=-0.2
+    # L/R 축이 mirrored → 같은 부호 방향이 같은 물리적 의미
+    # L: e = q - 0.2, R: e = q - (-0.2) = q + 0.2
+    # L: e > 0 → q > 0.2 (더 굴곡), e < 0 → q < 0.2 (더 펴짐)
+    # R: e > 0 → q > -0.2 (더 펴짐), e < 0 → q < -0.2 (더 굴곡)
+    # → 축 방향이 반대이므로 L/R 분리 필요
+    joint_deviation_left_knee = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
         weight=-0.60,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_Knee_Joint", "R_Knee_Joint"]),
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_Knee_Joint"]),
+            "target_offset": 0.0,
+            "deadband_pos": 1.8,     # 2.0까지 굴곡 허용
+            "deadband_neg": 0.05,    # 0.15까지 펴짐 허용, 그 이상은 페널티
+            "stiffness_pos": 0.2,    # 굴곡은 부드럽게
+            "stiffness_neg": 5.0,    # 과신전 강하게 제한
+        },
+    )
+
+    joint_deviation_right_knee = RewTerm(
+        func=mdp.bio_mimetic_soft_hard_constraint,
+        weight=-0.60,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["R_Knee_Joint"]),
             "target_offset": 0.0,
             "deadband_pos": 0.05,    # -0.15까지 펴짐 허용, 그 이상은 페널티
             "deadband_neg": 1.8,     # -2.0까지 굴곡 허용
@@ -175,10 +174,9 @@ class KangarooRewards(RewardsCfg):
         },
     )
 
-    # AnklePitch: L축=-y, R축=+y (반대 축), default=0.0
-    # L: [-0.7, 1.05], R: [-1.05, 0.7]
-    # L -y축: neg방향=발 들림(dorsiflexion), pos방향=발 내림(plantarflexion)
-    # 반대 축이므로 L/R 통합 가능 (같은 부호=같은 물리적 방향)
+    # AnklePitch: New URDF — L축=+y, R축=-y (mirrored)
+    # L: [-1.05, 0.7], R: [-0.7, 1.05]
+    # mirrored 축이므로 L/R 통합 가능 (같은 부호=같은 물리적 방향)
     # 보행 시 발이 너무 꺾이지 않도록 양방향 제한
     joint_deviation_anklepitch = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
@@ -191,26 +189,14 @@ class KangarooRewards(RewardsCfg):
         },
     )
 
-    # AnkleRoll: L축=+x, R축=+x (같은 축), default=0.0
+    # AnkleRoll: L축=+x, R축=+x (같은 축, 변경 없음), default=0.0
     # L/R: [-0.42, 0.42]
-    # 같은 축 → 물리적 의미 반대 (L: +x=내전, R: +x=외전) → L/R 분리
-    # 발이 안쪽/바깥쪽으로 너무 기울지 않도록 제한
-    joint_deviation_left_ankleroll = RewTerm(
+    # 같은 축이지만 대칭 범위 → 통합 가능
+    joint_deviation_ankleroll = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
         weight=-0.60,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_AnkleRoll_Joint"]),
-            "target_offset": 0.0,
-            "deadband": 0.2,      # ±0.2 rad (~11도) 까지 자유
-            "stiffness": 3.0,
-        },
-    )
-
-    joint_deviation_right_ankleroll = RewTerm(
-        func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-0.60,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["R_AnkleRoll_Joint"]),
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_AnkleRoll_Joint", "R_AnkleRoll_Joint"]),
             "target_offset": 0.0,
             "deadband": 0.2,      # ±0.2 rad (~11도) 까지 자유
             "stiffness": 3.0,
@@ -492,8 +478,9 @@ class ActionsCfg:
                        152],
 
         # Joint position limits from URDF (L leg then R leg)
-        joint_pos_limits=[(-0.58, 0.3), (-2.09, 1.57), (-0.78, 0.78), (-2.56, 0.0), (-0.7, 1.05), (-0.42, 0.42),
-                          (-0.3, 0.58), (-1.57, 2.09), (-0.78, 0.78), (-2.56, 0.0), (-1.05, 0.7), (-0.42, 0.42)],
+        # New URDF: L/R axes are mirrored, limits reflect the new axis directions
+        joint_pos_limits=[(-0.58, 0.3), (-1.57, 2.09), (-0.78, 0.78), (0.0, 2.56), (-1.05, 0.7), (-0.42, 0.42),
+                          (-0.58, 0.3), (-2.09, 1.57), (-0.78, 0.78), (-2.56, 0.0), (-0.7, 1.05), (-0.42, 0.42)],
 
         rand_motor_scale_range=(0.8, 1.2),
     )

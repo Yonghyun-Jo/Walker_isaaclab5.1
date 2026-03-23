@@ -8,20 +8,21 @@ import os
 # Walker initial joint positions (standing pose)
 # All joints are directly actuated — no passive/4-bar joints.
 # Order: L leg (6) + R leg (6) + WaistYaw (1) = 13 joints
+# New URDF: L/R axes are mirrored — opposite sign = same physical motion
 init = {
-    # Left leg  (HipPitch axis +Y, Knee axis -Y, AnklePitch axis -Y)
+    # Left leg  (HipRoll +X, HipPitch -Y, Knee +Y, AnklePitch +Y)
     "L_HipRoll_Joint": 0.0,
-    "L_HipPitch_Joint": -0.2,
+    "L_HipPitch_Joint": 0.2,
     "L_HipYaw_Joint": 0.0,
-    "L_Knee_Joint": -0.2,
-    "L_AnklePitch_Joint": 0.15,
+    "L_Knee_Joint": 0.2,
+    "L_AnklePitch_Joint": -0.15,
     "L_AnkleRoll_Joint": 0.0,
-    # Right leg (HipPitch axis -Y, Knee axis -Y, AnklePitch axis +Y)
+    # Right leg (HipRoll -X, HipPitch +Y, Knee -Y, AnklePitch -Y)
     "R_HipRoll_Joint": 0.0,
-    "R_HipPitch_Joint": 0.0,
+    "R_HipPitch_Joint": -0.2,
     "R_HipYaw_Joint": 0.0,
     "R_Knee_Joint": -0.2,
-    "R_AnklePitch_Joint": -0.15,
+    "R_AnklePitch_Joint": 0.15,
     "R_AnkleRoll_Joint": 0.0,
     # Waist
     "WaistYaw_Joint": 0.0,
@@ -30,7 +31,7 @@ init = {
 
 P73_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{P73_ASSETS_DATA_DIR}/p73_walker/p73_walker_box.usd",
+        usd_path=f"{P73_ASSETS_DATA_DIR}/p73_walker/p73_walker.usd",
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
