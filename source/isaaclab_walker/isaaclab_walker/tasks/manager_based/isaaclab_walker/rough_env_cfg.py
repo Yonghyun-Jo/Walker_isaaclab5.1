@@ -256,7 +256,7 @@ class KangarooRewards(RewardsCfg):
 
     low_speed_feet_alignment_penalty = RewTerm(
         func=mdp.low_speed_feet_alignment_penalty,
-        weight=-10.0,
+        weight=-0.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -280,7 +280,7 @@ class KangarooRewards(RewardsCfg):
 
     low_speed_double_support_penalty = RewTerm(
         func=mdp.low_speed_double_support_penalty,
-        weight=-10.0,
+        weight=-0.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -392,7 +392,7 @@ class KangarooRewards(RewardsCfg):
 
     swing_clearance_min_profile_penalty = RewTerm(
         func=mdp.swing_clearance_min_profile_penalty,
-        weight=-5.0,
+        weight=-10.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
