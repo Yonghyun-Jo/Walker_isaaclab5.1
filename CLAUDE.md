@@ -1,1 +1,0 @@
-/home/piene/Documents/PIENE/5. AI_workspace/claude_rules/isaaclab_walker.md
