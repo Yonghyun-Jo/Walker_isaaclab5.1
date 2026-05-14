@@ -485,8 +485,8 @@ class ActionsCfg:
 
         # Joint position limits from URDF (L leg then R leg)
         # New URDF: L/R axes are mirrored, limits reflect the new axis directions
-        joint_pos_limits=[(-0.58, 0.3), (-1.57, 2.09), (-0.78, 0.78), (0.0, 2.56), (-0.90, 0.7), (-0.42, 0.42),
-                          (-0.58, 0.3), (-2.09, 1.57), (-0.78, 0.78), (-2.56, 0.0), (-0.7, 0.90), (-0.42, 0.42)],
+        joint_pos_limits=[(-0.58, 0.3), (-1.57, 2.09), (-0.78, 0.78), (0.0, 2.15), (-0.90, 0.7), (-0.42, 0.42),
+                          (-0.58, 0.3), (-2.09, 1.57), (-0.78, 0.78), (-2.15, 0.0), (-0.7, 0.90), (-0.42, 0.42)],
 
         rand_motor_scale_range=(0.8, 1.2),
     )
