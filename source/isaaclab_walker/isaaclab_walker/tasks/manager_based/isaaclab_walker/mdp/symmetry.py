@@ -109,36 +109,42 @@ def _flip_lowerbody_12_axis_aware(joint_tensor: torch.Tensor) -> torch.Tensor:
       [10] R_AnklePitch_Joint
       [11] R_AnkleRoll_Joint
 
-    Rule from Walker URDF joint axis review (new URDF with mirrored L/R axes):
-      Key: same axis direction → swap only, opposite axis direction → swap + negate
+    Rule (derived from URDF axial-vector sagittal mirror analysis):
+      Under sagittal (xz-plane) reflection, a rotation axis (axial vector)
+      transforms as (ax, ay, az) -> (-ax, ay, -az).  For each joint pair,
+      if axial_mirror(L_axis) == R_axis → swap only (angles stay the same).
+      Otherwise → swap + negate.
 
-      Joint         L axis  R axis  Relation   Rule
-      HipRoll       +x      -x      opposite   swap + negate
-      HipPitch      -y      +y      opposite   swap + negate
-      HipYaw        -z      -z      same       swap only
-      Knee          +y      -y      opposite   swap + negate
-      AnklePitch    +y      -y      opposite   swap + negate
-      AnkleRoll     +x      +x      same       swap only
+      Joint         L axis  R axis  axial_mirror(L)   == R?  Rule
+      HipRoll       +x      -x      -x                yes    swap only
+      HipPitch      -y      +y      -y                no     swap + negate
+      HipYaw        -z      -z      +z                no     swap + negate
+      Knee          +y      -y      +y                no     swap + negate
+      AnklePitch    +y      -y      +y                no     swap + negate
+      AnkleRoll     +x      +x      -x                no     swap + negate
+
+    Verified against URDF forward kinematics: under this rule, FK(mirror(q))
+    matches sagittal_mirror(FK(q)) at machine precision for arbitrary q.
     """
     if joint_tensor.shape[1] != 12:
         raise ValueError(f"Expected 12D lower-body tensor. Got: {joint_tensor.shape}.")
     out = torch.zeros_like(joint_tensor)
 
     # Left -> Right
-    out[:, 6] = -joint_tensor[:, 0]    # HipRoll:    swap + negate (opposite +x/-x)
-    out[:, 7] = -joint_tensor[:, 1]    # HipPitch:   swap + negate (opposite -y/+y)
-    out[:, 8] = joint_tensor[:, 2]     # HipYaw:     swap only     (same axis -z/-z)
-    out[:, 9] = -joint_tensor[:, 3]    # Knee:       swap + negate (opposite +y/-y)
-    out[:, 10] = -joint_tensor[:, 4]   # AnklePitch: swap + negate (opposite +y/-y)
-    out[:, 11] = joint_tensor[:, 5]    # AnkleRoll:  swap only     (same axis +x/+x)
+    out[:, 6] = joint_tensor[:, 0]     # HipRoll:    swap only     (axial-mirror(+x) = -x = R_axis)
+    out[:, 7] = -joint_tensor[:, 1]    # HipPitch:   swap + negate
+    out[:, 8] = -joint_tensor[:, 2]    # HipYaw:     swap + negate (same L/R axes → +θ gives opposite physical rotation)
+    out[:, 9] = -joint_tensor[:, 3]    # Knee:       swap + negate
+    out[:, 10] = -joint_tensor[:, 4]   # AnklePitch: swap + negate
+    out[:, 11] = -joint_tensor[:, 5]   # AnkleRoll:  swap + negate (same L/R axes)
 
     # Right -> Left
-    out[:, 0] = -joint_tensor[:, 6]    # HipRoll:    swap + negate (opposite -x/+x)
-    out[:, 1] = -joint_tensor[:, 7]    # HipPitch:   swap + negate (opposite +y/-y)
-    out[:, 2] = joint_tensor[:, 8]     # HipYaw:     swap only     (same axis -z/-z)
-    out[:, 3] = -joint_tensor[:, 9]    # Knee:       swap + negate (opposite -y/+y)
-    out[:, 4] = -joint_tensor[:, 10]   # AnklePitch: swap + negate (opposite -y/+y)
-    out[:, 5] = joint_tensor[:, 11]    # AnkleRoll:  swap only     (same axis +x/+x)
+    out[:, 0] = joint_tensor[:, 6]     # HipRoll:    swap only
+    out[:, 1] = -joint_tensor[:, 7]    # HipPitch:   swap + negate
+    out[:, 2] = -joint_tensor[:, 8]    # HipYaw:     swap + negate
+    out[:, 3] = -joint_tensor[:, 9]    # Knee:       swap + negate
+    out[:, 4] = -joint_tensor[:, 10]   # AnklePitch: swap + negate
+    out[:, 5] = -joint_tensor[:, 11]   # AnkleRoll:  swap + negate
     return out
 
 
@@ -151,13 +157,13 @@ def p73_data_augmentation_lowerbody_mirror(
     """Walker lower-body symmetry augmentation helper for mirror loss path.
 
     Policy single-frame layout is fixed to 47D:
-      [0:3]   base_ang_vel
-      [3:6]   projected_gravity
-      [6:9]   velocity_commands
-      [9:11]  gait_phase_sin/cos (2D, no-flip)
-      [11:23] motor_joint_pos (12D)
-      [23:35] motor_joint_vel (12D)
-      [35:47] actions(last_processed_action, 12D)
+      [0:3]   base_ang_vel        mirror: [-1, +1, -1]   (axial: roll/yaw flip)
+      [3:6]   projected_gravity   mirror: [+1, -1, +1]   (polar: y flip)
+      [6:9]   velocity_commands   mirror: [+1, -1, -1]   (lin_y flip, yaw rate flip)
+      [9:11]  gait_phase_sin/cos  mirror: both × -1      (mirror = phase + 0.5 cycle)
+      [11:23] motor_joint_pos (12D, axis-aware flip)
+      [23:35] motor_joint_vel (12D, axis-aware flip)
+      [35:47] actions(last_processed_action, 12D, axis-aware flip)
     """
     if (obs is not None and obs_type == "policy") or actions is not None:
         _assert_p73_joint_order(env)
@@ -187,8 +193,9 @@ def p73_data_augmentation_lowerbody_mirror(
             last_actions = obs[:, start + 35 : start + 47]
 
             base_ang_vel_flipped = base_ang_vel * torch.tensor([-1.0, 1.0, -1.0], device=obs.device)
-            projected_gravity_flipped = projected_gravity * torch.tensor([-1.0, 1.0, 1.0], device=obs.device)
+            projected_gravity_flipped = projected_gravity * torch.tensor([1.0, -1.0, 1.0], device=obs.device)
             vel_cmd_flipped = vel_cmd * torch.tensor([1.0, -1.0, -1.0], device=obs.device)
+            gait_phase_flipped = -gait_phase
             motor_joint_pos_flipped = _flip_lowerbody_12_axis_aware(motor_joint_pos)
             motor_joint_vel_flipped = _flip_lowerbody_12_axis_aware(motor_joint_vel)
             last_actions_flipped = _flip_lowerbody_12_axis_aware(last_actions)
@@ -198,7 +205,7 @@ def p73_data_augmentation_lowerbody_mirror(
                     base_ang_vel_flipped,
                     projected_gravity_flipped,
                     vel_cmd_flipped,
-                    gait_phase,
+                    gait_phase_flipped,
                     motor_joint_pos_flipped,
                     motor_joint_vel_flipped,
                     last_actions_flipped,

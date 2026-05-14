@@ -461,6 +461,26 @@ class P73UnifiedCommandGUI:
                         style={"Button": {"background_color": 0xFF336699}},
                     )
 
+                ui.Spacer(height=6)
+                ui.Line(style={"color": 0xFF444444}, height=2)
+                ui.Spacer(height=4)
+
+                # =============================================================
+                # SECTION 4: POSE CAPTURE
+                # =============================================================
+                ui.Label(
+                    "Pose Capture (env0)",
+                    alignment=ui.Alignment.CENTER,
+                    style={"font_size": 16, "color": 0xFF88FF88},
+                )
+                ui.Spacer(height=2)
+                ui.Button(
+                    "Capture Pose",
+                    clicked_fn=self._on_capture_pose,
+                    height=32,
+                    style={"Button": {"background_color": 0xFF228822}},
+                )
+
     # ---------------------------------------------------------------------
     # Base velocity callbacks / updates
     # ---------------------------------------------------------------------
@@ -607,4 +627,70 @@ class P73UnifiedCommandGUI:
             print(f"[P73UnifiedCommandGUI] Right foot external force (env0): {force_vec.detach().cpu().numpy()}", flush=True)
         except Exception as e:
             self._foot_force_status_label.text = f"Foot force error: {str(e)}"
+
+    # ---------------------------------------------------------------------
+    # Pose capture callback
+    # ---------------------------------------------------------------------
+
+    _CAPTURE_JOINT_NAMES = [
+        "L_HipRoll_Joint", "L_HipPitch_Joint", "L_HipYaw_Joint",
+        "L_Knee_Joint", "L_AnklePitch_Joint", "L_AnkleRoll_Joint",
+        "R_HipRoll_Joint", "R_HipPitch_Joint", "R_HipYaw_Joint",
+        "R_Knee_Joint", "R_AnklePitch_Joint", "R_AnkleRoll_Joint",
+        "WaistYaw_Joint",
+    ]
+
+    def _on_capture_pose(self):
+        try:
+            robot = self._env.scene["robot"]
+            eid = 0
+            h = float(robot.data.root_pos_w[eid, 2].cpu())
+            jp = robot.data.joint_pos[eid].cpu()
+            dp = robot.data.default_joint_pos[eid].cpu()
+
+            cmd = None
+            try:
+                c = self._env.command_manager.get_command(self._base_command_name)
+                cmd = c[eid].cpu()
+            except Exception:
+                pass
+
+            if not hasattr(self, "_capture_count"):
+                self._capture_count = 0
+            self._capture_count += 1
+
+            print(f"\n{'='*60}", flush=True)
+            print(f"  POSE CAPTURE #{self._capture_count}", flush=True)
+            print(f"{'='*60}", flush=True)
+            print(f"  base_height: {h:.4f} m", flush=True)
+            if cmd is not None:
+                print(f"  cmd_vel: vx={cmd[0]:.3f}  vy={cmd[1]:.3f}  wz={cmd[2]:.3f}", flush=True)
+
+            print(f"\n  {'Joint':<25s} {'Abs':>8s}  {'Rel':>8s}", flush=True)
+            print(f"  {'-'*25} {'-'*8}  {'-'*8}", flush=True)
+
+            jmap = {}
+            for n in self._CAPTURE_JOINT_NAMES:
+                try:
+                    jmap[n] = robot.data.joint_names.index(n)
+                except ValueError:
+                    pass
+
+            for name, idx in jmap.items():
+                a = float(jp[idx])
+                r = float(jp[idx] - dp[idx])
+                print(f"  {name:<25s} {a:>8.4f}  {r:>8.4f}", flush=True)
+
+            print(f"\n  # Copy-paste for standing_pose:", flush=True)
+            print(f'  "standing_pose": {{', flush=True)
+            items = list(jmap.items())
+            for i, (name, idx) in enumerate(items):
+                a = round(float(jp[idx]), 4)
+                comma = "," if i < len(items) - 1 else ""
+                print(f'      "{name}": {a}{comma}', flush=True)
+            print(f"  }}", flush=True)
+            print(f'  # target_height: {h:.4f}', flush=True)
+            print(f"{'='*60}\n", flush=True)
+        except Exception as e:
+            print(f"[PoseCapture] Error: {e}", flush=True)
 

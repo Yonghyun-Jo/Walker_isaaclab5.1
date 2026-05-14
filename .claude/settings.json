@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sL https://raw.githubusercontent.com/leggedrobotics/legged_gym/master/legged_gym/envs/anymal_c/anymal_c_rough_config.py)",
+      "Bash(curl -sL https://raw.githubusercontent.com/leggedrobotics/legged_gym/master/legged_gym/envs/anymal_c/anymal_c_flat_config.py)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/leggedrobotics/legged_gym/master/legged_gym/envs/a1/a1_config.py\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/leggedrobotics/legged_gym/master/legged_gym/envs/base/legged_robot_config.py\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/roboterax/humanoid-gym/main/humanoid/envs/custom/humanoid_config.py\")"
+    ]
+  }
+}

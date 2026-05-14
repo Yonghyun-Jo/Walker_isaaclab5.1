@@ -53,32 +53,45 @@ class KangarooRewards(RewardsCfg):
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
-    body_height_tracking = RewTerm(
-        func=mdp.base_height_l2,
-        weight=-2.0,
-        params={"target_height": 0.80},
+    # Anti-crouch height shaping: two complementary terms.
+    #   A. One-sided L2: only penalize h < target. Upward overshoots are free,
+    #      so a tall posture is unpunished and weight can be increased without
+    #      forcing the "fall vs crouch" trade-off that symmetric L2 causes.
+    #   C. Bell-curve positive reward centered at target (std=0.03). Vanishing
+    #      gradient far from target avoids any "fall further to escape penalty"
+    #      incentive, while providing dense signal near target.
+    body_height_below_target_l2 = RewTerm(
+        func=mdp.base_height_below_target_l2,
+        weight=-50.0,
+        params={"target_height": 0.89},
+    )
+
+    body_height_target_exp = RewTerm(
+        func=mdp.base_height_target_exp,
+        weight=3.0,
+        params={"target_height": 0.89, "std": 0.03},
     )
 
     # === 2. Stability & Safety Rewards ==============================================
 
     flat_base_orientation_l2 = RewTerm(
         func=mdp.flat_orientation_l2,
-        weight=-5.0,
+        weight=-30.0,
     )
 
     lin_vel_z_l2 = RewTerm(
         func=mdp.lin_vel_z_l2,
-        weight=-0.0,
+        weight=-0.3,
     )
 
     ang_vel_xy_l2 = RewTerm(
         func=mdp.ang_vel_xy_l2,
-        weight=-0.2,
+        weight=-0.3,
     )
 
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-2.0,
+        weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[
                 "base_link",
@@ -105,7 +118,7 @@ class KangarooRewards(RewardsCfg):
 
     joint_vel_l2 = RewTerm(
         func=mdp.joint_vel_l2,
-        weight=-0.01,
+        weight=-0.001,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*")
         },
@@ -114,15 +127,22 @@ class KangarooRewards(RewardsCfg):
     # === 4. Joint Deviation & Limits ==============================================
 
     joint_deviation_hipyaw = RewTerm(
-        func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-0.80,
+        func=mdp.bio_mimetic_soft_hard_constraint_conditional,
+        weight=-1.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["L_HipYaw_Joint", "R_HipYaw_Joint"]),
+            "command_name": "base_velocity",
+            "command_index": 2,                 # ang_z command
+            "command_threshold": 0.01,
+            "base_vel_index": 2,                # 실제 ang_vel_z
+            "base_vel_threshold": 0.07,
             "target_offset": 0.0,
-            "deadband_pos": 0.0,
-            "deadband_neg": 0.0,
-            "stiffness_pos": 1.0,
-            "stiffness_neg": 1.0,
+            "deadband_pos_active": 0.0,        # 회전 시 허용
+            "deadband_neg_active": 0.0,
+            "deadband_pos_inactive": 0.0,       # 그 외 tight
+            "deadband_neg_inactive": 0.0,
+            "stiffness_pos": 1.5,
+            "stiffness_neg": 1.5,
         },
     )
 
@@ -130,32 +150,43 @@ class KangarooRewards(RewardsCfg):
     # Both: pos = abduction(벌림), neg = adduction(오므림) in their own frame
     # → L/R 통합 가능 (같은 부호 = 같은 물리적 방향)
     joint_deviation_hiproll = RewTerm(
-        func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-1.0,
+        func=mdp.bio_mimetic_soft_hard_constraint_conditional,
+        weight=-1.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["L_HipRoll_Joint", "R_HipRoll_Joint"]),
+            "command_name": "base_velocity",
+            "command_index": 1,                 # vy command (lateral)
+            "command_threshold": 0.01,
+            "base_vel_index": 1,                # 실제 vy
+            "base_vel_threshold": 0.07,
             "target_offset": 0.0,
-            "deadband_pos": 0.2,   # 벌림 허용
-            "deadband_neg": 0.1,   # 오므림 제한
+            "deadband_pos_active": 0.0,         # 횡보행/외력 시 벌림 허용
+            "deadband_neg_active": 0.0,         # 횡보행/외력 시 오므림 제한
+            "deadband_pos_inactive": 0.0,       # 그 외 tight
+            "deadband_neg_inactive": 0.0,
             "stiffness_pos": 1.5,
             "stiffness_neg": 2.5,
         },
     )
 
-    # Knee: New URDF — L axis +y range [0, 2.56] default=0.2, R axis -y range [-2.56, 0] default=-0.2
+    # Knee: New URDF — L axis +y range [0, 2.56] default=0.35, R axis -y range [-2.56, 0] default=-0.35
     # L/R 축이 mirrored → 같은 부호 방향이 같은 물리적 의미
-    # L: e = q - 0.2, R: e = q - (-0.2) = q + 0.2
-    # L: e > 0 → q > 0.2 (더 굴곡), e < 0 → q < 0.2 (더 펴짐)
-    # R: e > 0 → q > -0.2 (더 펴짐), e < 0 → q < -0.2 (더 굴곡)
+    # L: e = q - 0.35, R: e = q - (-0.35) = q + 0.35
+    # L: e > 0 → q > 0.35 (더 굴곡), e < 0 → q < 0.35 (더 펴짐)
+    # R: e > 0 → q > -0.35 (더 펴짐), e < 0 → q < -0.35 (더 굴곡)
     # → 축 방향이 반대이므로 L/R 분리 필요
+    # 허용 범위: q ∈ [0.15, 2.0] (L), q ∈ [-2.0, -0.15] (R)
+    # Max flexion bound tightened (1.65 → 1.0): knee flexes up to ~1.35 rad (~77°),
+    # slightly above human peak-gait flexion (60–70°). Removes the geometric
+    # freedom that let the policy drop the base height via deep knee bend.
     joint_deviation_left_knee = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-0.60,
+        weight=-2.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["L_Knee_Joint"]),
             "target_offset": 0.0,
-            "deadband_pos": 1.8,     # 2.0까지 굴곡 허용
-            "deadband_neg": 0.05,    # 0.15까지 펴짐 허용, 그 이상은 페널티
+            "deadband_pos": 1.0,     # 1.35까지 굴곡 허용 (1.35 - 0.35)
+            "deadband_neg": 0.20,    # 0.15까지 펴짐 허용 (0.35 - 0.15)
             "stiffness_pos": 0.2,    # 굴곡은 부드럽게
             "stiffness_neg": 5.0,    # 과신전 강하게 제한
         },
@@ -163,29 +194,43 @@ class KangarooRewards(RewardsCfg):
 
     joint_deviation_right_knee = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-0.60,
+        weight=-2.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["R_Knee_Joint"]),
             "target_offset": 0.0,
-            "deadband_pos": 0.05,    # -0.15까지 펴짐 허용, 그 이상은 페널티
-            "deadband_neg": 1.8,     # -2.0까지 굴곡 허용
+            "deadband_pos": 0.20,    # -0.15까지 펴짐 허용 (0.35 - 0.15)
+            "deadband_neg": 1.0,     # -1.35까지 굴곡 허용 (1.35 - 0.35)
             "stiffness_pos": 5.0,    # 과신전 강하게 제한
             "stiffness_neg": 0.2,    # 굴곡은 부드럽게
         },
     )
 
-    # AnklePitch: New URDF — L축=+y, R축=-y (mirrored)
+    # AnklePitch: New URDF — L축=+y default=-0.17, R축=-y default=0.17 (mirrored)
     # L: [-1.05, 0.7], R: [-0.7, 1.05]
-    # mirrored 축이므로 L/R 통합 가능 (같은 부호=같은 물리적 방향)
-    # 보행 시 발이 너무 꺾이지 않도록 양방향 제한
-    joint_deviation_anklepitch = RewTerm(
+    # 허용 범위: q ∈ [-0.41, 0.41] (L/R 동일 의도)
+    joint_deviation_left_anklepitch = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-0.60,
+        weight=-1.0,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_AnklePitch_Joint", "R_AnklePitch_Joint"]),
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["L_AnklePitch_Joint"]),
             "target_offset": 0.0,
-            "deadband": 0.3,
-            "stiffness": 3.0,     # 초과 시 페널티
+            "deadband_pos": 0.58,    # 0.41까지 허용 (0.41 - (-0.17))
+            "deadband_neg": 0.24,    # -0.41까지 허용 (-0.17 - (-0.41))
+            "stiffness_pos": 3.0,
+            "stiffness_neg": 3.0,
+        },
+    )
+
+    joint_deviation_right_anklepitch = RewTerm(
+        func=mdp.bio_mimetic_soft_hard_constraint,
+        weight=-1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["R_AnklePitch_Joint"]),
+            "target_offset": 0.0,
+            "deadband_pos": 0.24,    # 0.41까지 허용 (0.41 - 0.17)
+            "deadband_neg": 0.58,    # -0.41까지 허용 (0.17 - (-0.41))
+            "stiffness_pos": 3.0,
+            "stiffness_neg": 3.0,
         },
     )
 
@@ -194,7 +239,7 @@ class KangarooRewards(RewardsCfg):
     # 같은 축이지만 대칭 범위 → 통합 가능
     joint_deviation_ankleroll = RewTerm(
         func=mdp.bio_mimetic_soft_hard_constraint,
-        weight=-0.60,
+        weight=-5.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["L_AnkleRoll_Joint", "R_AnkleRoll_Joint"]),
             "target_offset": 0.0,
@@ -205,37 +250,163 @@ class KangarooRewards(RewardsCfg):
 
     # === 5. Action & Energy Efficiency ==============================================
 
-    action_rate_l2 = RewTerm(
-        func=mdp.action_rate_l2,
-        weight=-0.03,
+    # --- Action-rate L2, tiered by real-robot |Δa| measurement ---
+    # Action index order follows _LOWER_JOINT_NAMES:
+    #   0:L_HipRoll  1:L_HipPitch  2:L_HipYaw  3:L_Knee  4:L_AnklePitch  5:L_AnkleRoll
+    #   6:R_HipRoll  7:R_HipPitch  8:R_HipYaw  9:R_Knee 10:R_AnklePitch 11:R_AnkleRoll
+    #
+    # Measured |Δa| p99 (real robot, 260420 — 6 CSVs, 316k rows, moving):
+    #   Knee        0.248 / 0.195 (L/R)   max 0.56 / 0.39   (still jerkiest)
+    #   AnklePitch  0.202 / 0.211         max 0.30 / 0.42   (was 0.087 → 2.3× ↑)
+    #   HipPitch    0.115 / 0.117         max 0.23 / 0.27
+    #   AnkleRoll   0.067 / 0.074         max 0.13 / 0.15
+    #   HipYaw      0.065 / 0.056         max 0.13 / 0.12   (HipRoll의 1.5×)
+    #   HipRoll     0.041 / 0.040         max 0.12 / 0.11   (quietest)
+    #
+    # Weight strategy: budget로 jerky joint를 더 규제. AnklePitch는 예전 대비
+    # 2.3× 악화 → C 상향. Tier A를 HipRoll/HipYaw로 분리(비율 1.5× 반영).
+
+    # Tier A1 — HipRoll (정말 조용함): 유지
+    action_rate_hiproll = RewTerm(
+        func=mdp.action_rate_l2_selective,
+        weight=-0.02,
+        params={"action_indices": [0, 6]},  # L/R HipRoll
+    )
+
+    # Tier A2 — HipYaw (real p99이 HipRoll의 1.5×): 약간 강화
+    action_rate_hipyaw = RewTerm(
+        func=mdp.action_rate_l2_selective,
+        weight=-0.035,
+        params={"action_indices": [2, 8]},  # L/R HipYaw
+    )
+
+    # Tier B — HipPitch + AnkleRoll (moderate): 유지
+    action_rate_mid = RewTerm(
+        func=mdp.action_rate_l2_selective,
+        weight=-0.06,
+        params={"action_indices": [1, 5, 7, 11]},  # L/R HipPitch + L/R AnkleRoll
+    )
+
+    # Tier C — AnklePitch: real p99이 0.087 → 0.21로 2.3× 악화 → 비례 상향
+    action_rate_anklepitch = RewTerm(
+        func=mdp.action_rate_l2_selective,
+        weight=-0.15,
+        params={"action_indices": [4, 10]},  # L/R AnklePitch
+    )
+
+    # Tier D — Knee (최다 jerker, p99 0.25): 소폭 ↑
+    action_rate_knee = RewTerm(
+        func=mdp.action_rate_l2_selective,
+        weight=-0.30,
+        params={"action_indices": [3, 9]},  # L/R Knee
     )
 
     action_accel_l2 = RewTerm(
         func=mdp.action_accel_l2,
-        weight=-0.002,
+        weight=-0.004,
     )
 
+    # --- Acceleration penalties (smoothness) ---
+    # Baseline on all joints; distal joints (Knee/Ankle) get an extra term since
+    # real-robot data shows their qdd p99 is ~2–4× higher than hip joints.
     dof_acc_l2 = RewTerm(
         func=mdp.joint_acc_l2,
-        weight=-2.5e-7,
+        weight=-5.0e-7,
     )
 
-    dof_torques_l2 = RewTerm(
+    dof_acc_distal_l2 = RewTerm(
+        func=mdp.joint_acc_l2,
+        weight=-2.0e-6,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                ".*_Knee_Joint", ".*_AnklePitch_Joint", ".*_AnkleRoll_Joint",
+            ])
+        },
+    )
+
+    # --- Torque L2 penalties, split by τ_max group so each joint sees a
+    # comparable saturation-normalized penalty (w ∝ 1/τ_max²).
+    # Reference: Knee/HipPitch (τ_max=220) at w=5.5e-6.
+    # WaistYaw is excluded (real-robot data: max 17 Nm << 152 Nm limit).
+
+    # τ_max = 352 (HipRoll) — rarely saturates → lightest weight
+    dof_torques_hiproll_l2 = RewTerm(
         func=mdp.joint_torques_l2,
-        weight=-4.0e-6,
+        weight=-0.5e-6,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                "L_HipRoll_Joint", "R_HipRoll_Joint",
+            ])
+        },
     )
 
-    stand_still_joint_deviation = RewTerm(
-        func=mdp.stand_still_joint_deviation_l1,
-        weight=-1.5,
-        params={"command_name": "base_velocity", "command_threshold": 0.07},
+    # τ_max = 220 (HipPitch, Knee) — split to bias gait toward hip-driven walking.
+    # HipPitch: 0.7× baseline (cheaper to use)  → encourages larger hip swing
+    # Knee:     2.0× baseline (more expensive)  → discourages deep knee flexion
+    dof_torques_hippitch_l2 = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-3.80e-6,  # 5.5e-6 × 0.7
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                ".*_HipPitch_Joint",
+            ])
+        },
     )
+
+    dof_torques_knee_l2 = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-1.1e-5,  # 5.5e-6 × 2.0
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                ".*_Knee_Joint",
+            ])
+        },
+    )
+
+    # τ_max = 95 (HipYaw, Ankle*) — most saturation in real data → heaviest weight
+    # Scaled by (220/95)² ≈ 5.4 so saturation-normalized penalty matches Knee group.
+    dof_torques_small_l2 = RewTerm(
+        func=mdp.joint_torques_l2,
+        weight=-3.0e-5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                ".*_HipYaw_Joint", ".*_AnklePitch_Joint", ".*_AnkleRoll_Joint",
+            ])
+        },
+    )
+
+    # Soft torque-limit penalty: activates only at |τ|/τ_max > 0.8.
+    # Directly targets saturation, leaves normal torque usage unpenalized.
+    # AnklePitch is excluded here — it gets its own stricter term below.
+    dof_torques_limit_soft = RewTerm(
+        func=mdp.joint_torques_limit_soft_l2,
+        weight=-1.5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[
+                ".*_HipPitch_Joint", ".*_HipYaw_Joint",
+                ".*_Knee_Joint", ".*_AnkleRoll_Joint",
+            ]),
+            "soft_ratio": 0.8,
+        },
+    )
+
+    # AnklePitch-only soft-limit: earlier activation (soft_ratio=0.7) and stronger
+    # weight to target the 40% real-robot saturation observed at this joint.
+    dof_torques_anklepitch_limit_soft = RewTerm(
+        func=mdp.joint_torques_limit_soft_l2,
+        weight=-2.5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_AnklePitch_Joint"]),
+            "soft_ratio": 0.7,
+        },
+    )
+
 
     # === 6. Feet Contact & Stability ==============================================
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_biped,
-        weight=3.0,
+        weight=4.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -245,60 +416,27 @@ class KangarooRewards(RewardsCfg):
             ),
             "asset_cfg": SceneEntityCfg("robot"),
             "threshold": 0.45,
-            "velocity_threshold": 0.07,
-            "stop_cmd_vel_max": 0.05,
+            "velocity_threshold": 0.01,
+            "stop_cmd_vel_max": 0.07,
             "yaw_threshold_deg": 5.0,
             "pos_threshold_m": 0.02,
-            "stance_width_m": 0.192,
+            "stance_width_m": 0.205,
+            # Lock parallel x stance at stop: |x_L - x_R| ~ x_sep_target_m (feet on same x-line).
+            "x_sep_target_m": 0.0,
             "contact_threshold": 5.0,
-        },
-    )
-
-    low_speed_feet_alignment_penalty = RewTerm(
-        func=mdp.low_speed_feet_alignment_penalty,
-        weight=-0.0,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names=["L_Foot_Link", "R_Foot_Link"],
-                preserve_order=True,
-            ),
-            "asset_cfg": SceneEntityCfg("robot"),
-            "cmd_zero_max": 1.0e-3,
-            "body_vel_max": 0.07,
-            "vel_body_name": "base_link",
-            "yaw_threshold_deg": 5.0,
-            "pos_threshold_m": 0.02,
-            "stance_width_m": 0.192,
-            "contact_threshold": 5.0,
-            "yaw_scale": 1.0,
-            "pos_scale": 1.0,
-            "require_contact": False,
-        },
-    )
-
-    low_speed_double_support_penalty = RewTerm(
-        func=mdp.low_speed_double_support_penalty,
-        weight=-0.0,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names=["L_Foot_Link", "R_Foot_Link"],
-                preserve_order=True,
-            ),
-            "asset_cfg": SceneEntityCfg("robot"),
-            "cmd_zero_max": 1.0e-3,
-            "body_vel_max": 0.07,
-            "vel_body_name": "base_link",
-            "contact_threshold": 1.0,
+            # Schedule gate: tocabi_should_walk_stop_align already keeps the
+            # walking branch on while feet are misaligned at stop, so a fixed
+            # grace window is redundant. Push-activate trigger remains.
+            "cmd_zero_max": 0.0,
+            "grace_steps": 0,
+            "push_suppress_threshold": 1.0,
+            "push_activates": True,
         },
     )
 
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.5,
+        weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_Foot_Link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_Foot_Link"),
@@ -307,7 +445,20 @@ class KangarooRewards(RewardsCfg):
 
     feet_ground_parallel = RewTerm(
         func=mdp.feet_ground_parallel,
-        weight=-5.0,
+        weight=-15.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_Foot_Link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_Foot_Link"),
+            "threshold": 1.0,
+        },
+    )
+
+    # Swing-phase counterpart: keeps the foot flat while airborne so the gait
+    # doesn't show toe-down dangling. Lower weight than the contact term to
+    # avoid overdriving ankle torque near touchdown / takeoff.
+    feet_ground_parallel_swing = RewTerm(
+        func=mdp.feet_ground_parallel_swing,
+        weight=-10.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_Foot_Link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_Foot_Link"),
@@ -325,12 +476,20 @@ class KangarooRewards(RewardsCfg):
         },
     )
 
-    head_feet_yaw_mismatch_l2 = RewTerm(
-        func=mdp.ref_feet_yaw_mismatch_l2,
-        weight=-10.0,
+    feet_yaw_symmetry_about_base = RewTerm(
+        func=mdp.feet_yaw_symmetry_about_base_l2,
+        weight=-3.0,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_Foot_Link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_Foot_Link"),
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["L_Foot_Link", "R_Foot_Link"],
+                preserve_order=True,
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["L_Foot_Link", "R_Foot_Link"],
+                preserve_order=True,
+            ),
             "reference_body_name": "base_link",
             "threshold": 1.0,
         },
@@ -373,9 +532,20 @@ class KangarooRewards(RewardsCfg):
         },
     )
 
+    contact_force_limit = RewTerm(
+        func=mdp.contact_force_limit_soft_penalty,
+        weight=-15.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_Foot_Link"),
+            "robot_mass": 60.0,
+            "safety_factor": 1.5,
+            "std": 200.0,
+        },
+    )
+
     contact_schedule_biped_ds = RewTerm(
         func=mdp.contact_schedule_reward_biped_ds,
-        weight=2.0,
+        weight=5.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -383,16 +553,30 @@ class KangarooRewards(RewardsCfg):
                 body_names=["L_Foot_Link", "R_Foot_Link"],
                 preserve_order=True,
             ),
+            "asset_cfg": SceneEntityCfg("robot"),
             "period_steps": 40,
             "ds_ratio": 0.20,
             "contact_threshold": 5.0,
-            "cmd_zero_max": 1.0e-3,
+            "cmd_zero_max": 0.0,
+            # misalign_activates keeps the schedule on until feet align — that's
+            # a more precise replacement for the fixed grace window.
+            "grace_steps": 0,
+            "push_suppress_threshold": 1.0,
+            "push_activates": True,
+            # Keep stepping while feet aren't aligned at stop intent.
+            # Thresholds match feet_air_time_biped's stop-alignment switch.
+            "misalign_activates": True,
+            "stop_cmd_vel_max": 0.07,
+            "yaw_threshold_deg": 5.0,
+            "pos_threshold_m": 0.02,
+            "stance_width_m": 0.205,
+            "x_sep_target_m": 0.0,
         },
     )
 
     swing_clearance_min_profile_penalty = RewTerm(
         func=mdp.swing_clearance_min_profile_penalty,
-        weight=-10.0,
+        weight=-60.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg(
@@ -407,15 +591,28 @@ class KangarooRewards(RewardsCfg):
             ),
             "period_steps": 40,
             "ds_ratio": 0.20,
-            "clearance_height": 0.17,
+            "clearance_height": 0.13,
+            "profile_offset": 0.0075,
             "contact_threshold": 5.0,
-            "cmd_zero_max": 1.0e-3,
+            "cmd_zero_max": 0.0,
+            # misalign_activates supersedes the fixed grace window.
+            "grace_steps": 0,
+            "push_suppress_threshold": 1.0,
+            # Keep swing-clearance penalty active while feet aren't aligned at
+            # stop intent — so the robot keeps lifting the foot during the
+            # alignment-correction stepping.
+            "misalign_activates": True,
+            "stop_cmd_vel_max": 0.07,
+            "yaw_threshold_deg": 5.0,
+            "pos_threshold_m": 0.02,
+            "stance_width_m": 0.205,
+            "x_sep_target_m": 0.0,
         },
     )
 
     spring_compliance_pos_match = RewTerm(
         func=mdp.spring_compliance_pos_match_reward,
-        weight=-8.0,
+        weight=-0.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -427,33 +624,33 @@ class KangarooRewards(RewardsCfg):
             "k_spring": 9000.0,
             "contact_threshold": 5.0,
             "robot_mass": 60.3,
-            "baseline_margin": 1.2,
+            "baseline_margin": 0.5,
             "gravity": 9.81,
             "command_name": "base_velocity",
-            "velocity_threshold": 0.05,
-            "cmd_vel_eps": 1.0e-3,
+            "velocity_threshold": 0.0,
+            "cmd_vel_eps": 0.0,
         },
     )
 
     feet_height_symmetry_penalty = RewTerm(
         func=mdp.feet_height_symmetry_penalty,
-        weight=-7.0,
+        weight=-15.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["L_Foot_Link", "R_Foot_Link"]),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["L_Foot_Link", "R_Foot_Link"]),
             "command_name": "base_velocity",
-            "velocity_threshold": 0.05,
+            "velocity_threshold": 0.0,
             "contact_threshold": 5.0,
         },
     )
 
     air_time_variance = RewTerm(
         func=mdp.air_time_variance_penalty_gated,
-        weight=-7.0,
+        weight=-20.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["L_Foot_Link", "R_Foot_Link"]),
             "command_name": "base_velocity",
-            "velocity_threshold": 0.05,
+            "velocity_threshold": 0.0,
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -461,34 +658,20 @@ class KangarooRewards(RewardsCfg):
 
 @configclass
 class ActionsCfg:
+    # PD gains, torque limits, LUT, delay, and motor randomization are now
+    # configured in the actuator (DelayedPDActuatorLUTCfg) inside p73_walker.py.
+    # The action term only handles scaling, clipping, and position target computation.
     joint_pos = mdp.LowerBodyActionsCfg(
         asset_name="robot",
         clip={".*": (-1.0, 1.0)},
         scale=0.5,
         lower_joint_names=_LOWER_JOINT_NAMES,
         upper_joint_names=_UPPER_JOINT_NAMES,
-        pd_control=True,
-
-        # PD gains: 12 lower + 1 upper = 13
-        # From setting_realrobot_PDgain.yaml
-        p_gains=[5000.0, 4000.0, 2000.0, 5000.0, 4000.0, 4000.0,
-                 5000.0, 4000.0, 2000.0, 5000.0, 4000.0, 4000.0,
-                 6000.0],
-
-        d_gains=[50.0, 20.0, 15.0, 30.0, 30.0, 30.0,
-                 50.0, 20.0, 15.0, 30.0, 30.0, 30.0,
-                 100.0],
-
-        torque_limits=[352, 220, 95, 220, 95, 95,
-                       352, 220, 95, 220, 95, 95,
-                       152],
 
         # Joint position limits from URDF (L leg then R leg)
         # New URDF: L/R axes are mirrored, limits reflect the new axis directions
         joint_pos_limits=[(-0.58, 0.3), (-1.57, 2.09), (-0.78, 0.78), (0.0, 2.15), (-0.90, 0.7), (-0.42, 0.42),
                           (-0.58, 0.3), (-2.09, 1.57), (-0.78, 0.78), (-2.15, 0.0), (-0.7, 0.90), (-0.42, 0.42)],
-
-        rand_motor_scale_range=(0.8, 1.2),
     )
 
 
@@ -503,37 +686,39 @@ class ObservationsCfg:
         Policy obs per frame: 3+3+3+2+12+12+12 = 47D
         """
 
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
-        projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.4, n_max=0.4)) # 0.2 -> 0.4
+        projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)) # 0.05 -> 0.1 -> 0.2 -> 0.05
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         gait_phase_sin = ObsTerm(
             func=mdp.gait_phase_sin,
-            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 1.0e-3},
+            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 0.01},
         )
         gait_phase_cos = ObsTerm(
             func=mdp.gait_phase_cos,
-            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 1.0e-3},
+            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 0.01},
         )
         motor_joint_pos = ObsTerm(
             func=mdp.joint_pos_ordered_rel,
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=_LOWER_JOINT_NAMES)
             },
-            noise=Unoise(n_min=-0.0025, n_max=0.0025),
+            noise=Unoise(n_min=-0.01, n_max=0.01),
         )
         motor_joint_vel = ObsTerm(
             func=mdp.joint_vel_ordered,
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=_LOWER_JOINT_NAMES)
             },
-            noise=Unoise(n_min=-0.025, n_max=0.025),
+            noise=Unoise(n_min=-1.5, n_max=1.5), # (-1.0, 1.0)
+            clip=(-30.0, 30.0),
+            scale=1.0 / 30.0,
         )
         actions = ObsTerm(func=mdp.last_processed_action, params={"action_name": "joint_pos"})
 
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
-            self.history_length = 5
+            self.history_length = 10
 
     @configclass
     class TargetCfg(ObsGroup):
@@ -544,11 +729,11 @@ class ObservationsCfg:
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         gait_phase_sin = ObsTerm(
             func=mdp.gait_phase_sin,
-            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 1.0e-3},
+            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 0.01},
         )
         gait_phase_cos = ObsTerm(
             func=mdp.gait_phase_cos,
-            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 1.0e-3},
+            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 0.01},
         )
         motor_joint_pos = ObsTerm(
             func=mdp.joint_pos_ordered_rel,
@@ -557,6 +742,8 @@ class ObservationsCfg:
         motor_joint_vel = ObsTerm(
             func=mdp.joint_vel_ordered,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=_LOWER_JOINT_NAMES)},
+            clip=(-30.0, 30.0),
+            scale=1.0 / 30.0,
         )
         height_scan = ObsTerm(
             func=mdp.height_scan,
@@ -570,6 +757,15 @@ class ObservationsCfg:
         base_com_offset = ObsTerm(func=mdp.base_link_com_offset)
         motor_armature_stats = ObsTerm(func=mdp.motor_joint_armature_stats, params={"joint_name_keys": ".*_Joint"})
         motor_damping_stats = ObsTerm(func=mdp.motor_joint_damping_stats, params={"joint_name_keys": ".*_Joint"})
+        push_force = ObsTerm(func=mdp.persistent_push_force, scale=1.0 / 100.0)
+        # Actuator privileged info
+        # NOTE: command_delay is currently a dead feature (always 0.0) because
+        # min_delay=max_delay=0 in p73_walker.py. Kept for checkpoint compatibility.
+        command_delay = ObsTerm(
+            func=mdp.actuator_command_delay,
+            params={"actuator_name": "walker_motors", "max_delay": 2},
+        )
+        motor_strength = ObsTerm(func=mdp.actuator_motor_strength, params={"actuator_name": "walker_motors"})
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -602,11 +798,11 @@ class ObservationsCfg:
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         gait_phase_sin = ObsTerm(
             func=mdp.gait_phase_sin,
-            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 1.0e-3},
+            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 0.01},
         )
         gait_phase_cos = ObsTerm(
             func=mdp.gait_phase_cos,
-            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 1.0e-3},
+            params={"period_steps": 40, "command_name": "base_velocity", "cmd_zero_max": 0.01},
         )
         motor_joint_pos = ObsTerm(
             func=mdp.joint_pos_ordered_rel,
@@ -615,6 +811,8 @@ class ObservationsCfg:
         motor_joint_vel = ObsTerm(
             func=mdp.joint_vel_ordered,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=_LOWER_JOINT_NAMES)},
+            clip=(-30.0, 30.0),
+            scale=1.0 / 30.0,
         )
         actions = ObsTerm(func=mdp.last_processed_action, params={"action_name": "joint_pos"})
 
@@ -628,6 +826,14 @@ class ObservationsCfg:
         base_com_offset = ObsTerm(func=mdp.base_link_com_offset)
         motor_armature_stats = ObsTerm(func=mdp.motor_joint_armature_stats, params={"joint_name_keys": ".*_Joint"})
         motor_damping_stats = ObsTerm(func=mdp.motor_joint_damping_stats, params={"joint_name_keys": ".*_Joint"})
+        # Actuator privileged info
+        # NOTE: command_delay is currently a dead feature (always 0.0) because
+        # min_delay=max_delay=0 in p73_walker.py. Kept for checkpoint compatibility.
+        command_delay = ObsTerm(
+            func=mdp.actuator_command_delay,
+            params={"actuator_name": "walker_motors", "max_delay": 2},
+        )
+        motor_strength = ObsTerm(func=mdp.actuator_motor_strength, params={"actuator_name": "walker_motors"})
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -705,12 +911,19 @@ class EventCfg:
         func=mdp.reset_joints_by_offset, mode="reset",
         params={"position_range": (-0.1, 0.1), "velocity_range": (-0.1, 0.1)},
     )
+    # Armature DR DISABLED for LSTM actuator-net configuration.
+    # Reason: armature is a motor-side parameter; varying it (0.6×–1.4×) makes the
+    # joint's qdd-response to a given torque differ by up to ±40%. The LSTM was
+    # trained on real-robot data with one fixed armature, so randomized values put
+    # the LSTM input (q̇) out-of-distribution and produce unreliable torques.
+    # Plant-side DR (link mass, base mass/COM, friction, push) remains active to
+    # preserve sim2real robustness without contaminating the actuator-net domain.
     randomize_armature = EventTerm(
         func=mdp.randomize_joint_parameters, mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_Joint"),
-            "friction_distribution_params": (0.0, 0.0),
-            "armature_distribution_params": (0.6, 1.4),
+            "friction_distribution_params": (0.9, 1.1),
+            "armature_distribution_params": (0.9, 1.1), # 0.6, 1.4
             "operation": "scale",
         },
     )
@@ -719,23 +932,25 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*_Joint"),
             "stiffness_distribution_params": (0.0, 0.0),
-            "damping_distribution_params": (0.0, 2.9),
+            "damping_distribution_params": (0.0, 0.0),
             "operation": "add",
         },
     )
 
     push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
+        func=mdp.push_by_persistent_force,
         mode="interval",
-        interval_range_s=(8.0, 8.0),
+        interval_range_s=(5.0, 10.0),
         params={
-            "velocity_range": {
-                "x": (-0.5, 0.5),
-                "y": (-0.5, 0.5),
-                "yaw": (-0.2, 0.2),
+            "force_range": {
+                "x": (-60.0, 60.0), # (-60.0, 60.0)
+                "y": (-60.0, 60.0), # (-60.0, 60.0)
+                "z": (-30.0, 30.0), # (-30.0, 30.0)
             },
+            "duration_s": (0.5, 2.0),
         },
     )
+
 
 
 @configclass
@@ -758,6 +973,10 @@ class P73RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.episode_length_s = 20.0
         self.sim.dt = 0.005
 
+        # Stop/restart transition coverage: boost zero-cmd sampling so the policy
+        # sees more walk→stop→walk cycles during training (was 0.02 from base cfg).
+        self.commands.base_velocity.rel_standing_envs = 0.15
+
         # Scene
         self.scene.num_envs = 4096
         self.scene.robot = P73_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
@@ -771,8 +990,8 @@ class P73RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base_link"
 
         # Phase-gait hyperparameters
-        gait_period_steps = 50
-        gait_ds_ratio = 0.20
+        gait_period_steps = 70
+        gait_ds_ratio = 0.25
 
         self.observations.policy.gait_phase_sin.params["period_steps"] = gait_period_steps
         self.observations.policy.gait_phase_cos.params["period_steps"] = gait_period_steps

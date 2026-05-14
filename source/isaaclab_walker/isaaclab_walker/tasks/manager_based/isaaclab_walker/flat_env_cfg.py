@@ -39,7 +39,7 @@ class P73FlatEnvCfg(P73RoughEnvCfg):
         self.scene.height_scanner.debug_vis = False
 
         # Commands
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 0.6)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.6, 0.6)
 
@@ -64,6 +64,6 @@ class P73FlatPlayEnvCfg(P73FlatEnvCfg):
         #self.viewer.lookat = (0.0, 0.0, 1.0)
         self.events.push_robot = None
                 # Commands
-        self.commands.base_velocity.ranges.lin_vel_x = (1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.0, 0.0)

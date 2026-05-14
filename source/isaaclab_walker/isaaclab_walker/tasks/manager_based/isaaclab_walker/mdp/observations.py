@@ -253,6 +253,54 @@ def motor_joint_armature_stats(env: ManagerBasedEnv, *, joint_name_keys: str = "
     return torch.stack((mean, std), dim=-1)
 
 
+def persistent_push_force(env: ManagerBasedEnv) -> torch.Tensor:
+    """Return the currently applied persistent push force as 3D (Fx, Fy, Fz) in world frame.
+
+    Used as a TargetCfg observation so the DWM encoder learns to estimate external disturbances.
+    Returns zeros if no push is active.
+    """
+    buf = env.__dict__.get("_persistent_push_force", None)
+    if isinstance(buf, torch.Tensor) and buf.shape == (env.num_envs, 3):
+        return buf
+    return torch.zeros(env.num_envs, 3, device=env.device, dtype=torch.float32)
+
+
+def actuator_command_delay(
+    env: ManagerBasedEnv,
+    *,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    actuator_name: str = "walker_motors",
+    max_delay: int = 4,
+) -> torch.Tensor:
+    """Return the per-env command delay of the actuator, normalized to [0, 1]. Shape: (num_envs, 1).
+
+    Reads the time_lags from the actuator's delay buffer and divides by max_delay.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    actuator = asset.actuators[actuator_name]
+    time_lags = actuator.positions_delay_buffer.time_lags.float()  # (num_envs,)
+    normalized = time_lags / max(max_delay, 1)
+    return normalized.unsqueeze(-1)
+
+
+def actuator_motor_strength(
+    env: ManagerBasedEnv,
+    *,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    actuator_name: str = "walker_motors",
+) -> torch.Tensor:
+    """Return the per-env, per-joint motor strength scale. Shape: (num_envs, num_joints).
+
+    Reads the last-used motor_strength_scale from the custom actuator.
+    Returns ones if the actuator does not have the attribute (no randomization).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    actuator = asset.actuators[actuator_name]
+    if hasattr(actuator, "motor_strength_scale"):
+        return actuator.motor_strength_scale.clone()
+    return torch.ones(env.num_envs, actuator.num_joints, device=env.device)
+
+
 def motor_joint_damping_stats(env: ManagerBasedEnv, *, joint_name_keys: str = ".*_motor") -> torch.Tensor:
     """Return mean/std of (damping - default_damping) across motor joints as 2D.
 

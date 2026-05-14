@@ -80,12 +80,7 @@
     </geometry>
     <material name="blue"/>
   </visual>
-  <collision>
-    <origin xyz="-0.0155 0.0 -0.0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="../meshes/R_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
-    </geometry>
-  </collision>
+
 </link>
 
 <link name="L_HipRoll_Link">
@@ -101,12 +96,7 @@
     </geometry>
     <material name="blue"/>
   </visual>
-  <collision>
-    <origin xyz="0.0155 -0.0 -0.0" rpy="0 0 0"/>
-    <geometry>
-      <mesh filename="../meshes/L_HipRoll_Link.stl" scale="0.001 0.001 0.001"/>
-    </geometry>
-  </collision>
+
 </link>
 
 <link name="R_HipPitch_Link">

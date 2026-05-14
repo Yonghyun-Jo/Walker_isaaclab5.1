@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
 import omni.log
 import torch
@@ -15,6 +14,19 @@ if TYPE_CHECKING:
 
 
 class LowerBodyActions(ActionTerm):
+    """Action term that sets joint position targets for lower-body (RL-controlled) and upper-body (PD-held) joints.
+
+    PD computation, torque clipping (including angle-dependent LUT), command delay,
+    and motor strength randomization are all handled by the actuator model
+    (DelayedPDActuatorLUT) configured on the robot asset.
+
+    This term only:
+      - Scales and clips the raw policy output (12D normalized delta)
+      - Converts to desired positions: q_des = q_default + delta
+      - Clamps to joint position limits
+      - Sets position targets for the actuator to process
+    """
+
     cfg: LowerBodyActionsCfg
     _asset: Articulation
     _scale: torch.Tensor | float
@@ -23,36 +35,31 @@ class LowerBodyActions(ActionTerm):
     def __init__(self, cfg: LowerBodyActionsCfg, env: ManagerBasedEnv):
         super().__init__(cfg, env)
 
-        # resolve the joints over which the action term is applied
-        self._joint_ids, self._joint_names = self._asset.find_joints(self.cfg.lower_joint_names)
-        self._joint_ids = [self._asset.data.joint_names.index(joint_name) for joint_name in self.cfg.lower_joint_names]
+        # Resolve lower body joints
+        self._joint_ids = [self._asset.data.joint_names.index(name) for name in self.cfg.lower_joint_names]
         self._joint_names = list(self.cfg.lower_joint_names)
-        self._upper_joint_ids = [self._asset.data.joint_names.index(joint_name) for joint_name in self.cfg.upper_joint_names]
+
+        # Resolve upper body joints
+        self._upper_joint_ids = [self._asset.data.joint_names.index(name) for name in self.cfg.upper_joint_names]
         self._default_upper_joint_pos = self._asset.data.default_joint_pos[:, self._upper_joint_ids]
-        self._p_gains = torch.tensor(self.cfg.p_gains, device=self.device)
-        self._d_gains = torch.tensor(self.cfg.d_gains, device=self.device)
-        self._torque_limits = torch.tensor(self.cfg.torque_limits, device=self.device)
+
+        # Joint position limits for lower body
         self._lower_joint_pos_limits = torch.tensor(self.cfg.joint_pos_limits, device=self.device)
-        self._rand_motor_scale_range = torch.tensor(self.cfg.rand_motor_scale_range, device=self.device)
 
         self._num_lower = len(self._joint_ids)
         self._num_upper = len(self._upper_joint_ids)
         self._num_joints = self._num_lower
-        # log the resolved joint names for debugging
+
         omni.log.info(
             f"Resolved joint names for the action term {self.__class__.__name__}:"
             f" {self._joint_names} [{self._joint_ids}]"
         )
 
-        # Avoid indexing across all joints for efficiency
-        if self._num_joints == self._asset.num_joints:
-            self._joint_ids = slice(None)
-
-        # create tensors for raw and processed actions
+        # Create action tensors
         self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
-        self._processed_actions = torch.zeros_like(self.raw_actions)
+        self._processed_actions = torch.zeros_like(self._raw_actions)
 
-        # parse scale
+        # Parse scale
         if isinstance(cfg.scale, (float, int)):
             self._scale = float(cfg.scale)
         elif isinstance(cfg.scale, dict):
@@ -61,7 +68,8 @@ class LowerBodyActions(ActionTerm):
             self._scale[:, index_list] = torch.tensor(value_list, device=self.device)
         else:
             raise ValueError(f"Unsupported scale type: {type(cfg.scale)}. Supported types are float and dict.")
-        # parse clip
+
+        # Parse clip
         if self.cfg.clip is not None:
             if isinstance(cfg.clip, dict):
                 self._clip = torch.tensor([[-float("inf"), float("inf")]], device=self.device).repeat(
@@ -93,71 +101,28 @@ class LowerBodyActions(ActionTerm):
         self._processed_actions[:] = processed
 
     def apply_actions(self):
+        # Lower body: desired position = default + delta
+        lower_lim = self._lower_joint_pos_limits[:, 0].view(1, -1)
+        upper_lim = self._lower_joint_pos_limits[:, 1].view(1, -1)
+
+        q_default_lower = self._asset.data.default_joint_pos[:, self._joint_ids]
+        q_des_lower = q_default_lower + self.processed_actions
+        q_des_lower = torch.clamp(q_des_lower, min=lower_lim, max=upper_lim)
+
+        # Upper body: hold at default pose
+        q_des_upper = self._default_upper_joint_pos
+
+        # Set position targets — the actuator (DelayedPDActuatorLUT) handles
+        # PD computation, delay, LUT clipping, and motor strength randomization
         joint_ids_ordered = self._joint_ids + self._upper_joint_ids
+        target_pos = torch.cat([q_des_lower, q_des_upper], dim=1)
+        self._asset.set_joint_position_target(target_pos, joint_ids=joint_ids_ordered)
 
-        # per-step motor strength randomization
-        rand_motor_scale_full = math_utils.sample_uniform(
-            float(self._rand_motor_scale_range[0]),
-            float(self._rand_motor_scale_range[1]),
-            (self.num_envs, len(joint_ids_ordered)),
-            device=self.device,
-        )
-
-        if self.cfg.pd_control:
-            # PD mode (delta_default): q_des_lower = q_default_lower + delta_q
-            lower_lim = self._lower_joint_pos_limits[:, 0].view(1, -1).repeat(self.num_envs, 1)
-            upper_lim = self._lower_joint_pos_limits[:, 1].view(1, -1).repeat(self.num_envs, 1)
-
-            delta_q = self.processed_actions
-            q_default_lower = self._asset.data.default_joint_pos[:, self._joint_ids]
-            q_des_lower = q_default_lower + delta_q
-            q_des_lower = torch.clamp(q_des_lower, min=lower_lim, max=upper_lim)
-
-            q_lower = self._asset.data.joint_pos[:, self._joint_ids]
-            qd_lower = self._asset.data.joint_vel[:, self._joint_ids]
-            tau_lower = (self._p_gains[:self._num_lower] / 9.0) * (q_des_lower - q_lower) + (self._d_gains[:self._num_lower] / 3.0) * (-qd_lower)
-
-            # upper body: PD hold default pose
-            q_upper = self._asset.data.joint_pos[:, self._upper_joint_ids]
-            qd_upper = self._asset.data.joint_vel[:, self._upper_joint_ids]
-            q_des_upper = self._default_upper_joint_pos
-            tau_upper = (self._p_gains[self._num_lower:] / 9.0) * (q_des_upper - q_upper) + (self._d_gains[self._num_lower:] / 3.0) * (-qd_upper)
-
-            # safety clamp to torque limits
-            tau_lower = torch.clamp(
-                tau_lower,
-                min=-self._torque_limits[:self._num_lower].view(1, -1),
-                max=self._torque_limits[:self._num_lower].view(1, -1),
-            )
-            tau_upper = torch.clamp(
-                tau_upper,
-                min=-self._torque_limits[self._num_lower:].view(1, -1),
-                max=self._torque_limits[self._num_lower:].view(1, -1),
-            )
-
-            # apply motor strength randomization
-            tau_lower = tau_lower * rand_motor_scale_full[:, :self._num_lower]
-            tau_upper = tau_upper * rand_motor_scale_full[:, self._num_lower:]
-            target_effort = torch.cat([tau_lower, tau_upper], dim=1)
-
-        else:
-            # Torque-direct mode
-            tau_lower = self.processed_actions * self._torque_limits[:self._num_lower] * rand_motor_scale_full[:, :self._num_lower]
-            tau_upper = (self._p_gains[self._num_lower:] / 9.0) * (self._default_upper_joint_pos - self._asset.data.joint_pos[:, self._upper_joint_ids]) \
-                      + (self._d_gains[self._num_lower:] / 3.0) * (-self._asset.data.joint_vel[:, self._upper_joint_ids])
-            tau_upper = torch.clamp(
-                tau_upper,
-                min=-self._torque_limits[self._num_lower:].view(1, -1),
-                max=self._torque_limits[self._num_lower:].view(1, -1),
-            )
-            tau_upper = tau_upper * rand_motor_scale_full[:, self._num_lower:]
-            target_effort = torch.cat([tau_lower, tau_upper], dim=1)
-
-        self._asset.set_joint_effort_target(target_effort, joint_ids=joint_ids_ordered)
 
 from dataclasses import MISSING
 from isaaclab.managers.action_manager import ActionTerm, ActionTermCfg
 from isaaclab.utils import configclass
+
 
 @configclass
 class LowerBodyActionsCfg(ActionTermCfg):
@@ -165,9 +130,4 @@ class LowerBodyActionsCfg(ActionTermCfg):
     lower_joint_names: list[str] = MISSING
     upper_joint_names: list[str] = MISSING
     scale: float | dict[str, float] = 1.0
-    p_gains: list[float] = MISSING
-    d_gains: list[float] = MISSING
-    torque_limits: list[float] = MISSING
     joint_pos_limits: list[tuple[float, float]] = MISSING
-    pd_control: bool = True
-    rand_motor_scale_range: tuple[float, float] = (1.0, 1.0)

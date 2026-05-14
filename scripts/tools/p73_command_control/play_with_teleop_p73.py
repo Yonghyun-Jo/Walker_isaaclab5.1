@@ -100,7 +100,7 @@ import isaaclab_walker.tasks  # noqa: F401, E402
 from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent  # noqa: E402
 from isaaclab.utils.assets import retrieve_file_path  # noqa: E402
 from isaaclab.utils.dict import print_dict  # noqa: E402
-from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
+from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx  # noqa: E402
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg  # noqa: E402
 from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint  # noqa: E402
 
@@ -328,6 +328,69 @@ class BaseVelocityGUI:
             self._status_label.text = f"Error: {str(e)}"
 
 
+class _FullPipelineExporter(torch.nn.Module):
+    """Wraps the full ActorCriticAdaptationFuture inference pipeline for export.
+
+    Input:  history_obs (1, num_actor_obs)  — e.g. (1, 470) = 47D × 10 frames
+    Output: actions     (1, num_actions)    — e.g. (1, 12)
+
+    Internally runs: normalizer → encoder → extract current_obs → concat → actor
+    This matches ActorCriticAdaptationFuture.act_inference() exactly.
+    """
+
+    def __init__(self, policy_nn):
+        super().__init__()
+        import copy
+
+        self.normalizer = copy.deepcopy(policy_nn.actor_obs_normalizer)
+        self.encoder = copy.deepcopy(policy_nn.encoder)
+        self.actor = copy.deepcopy(policy_nn.actor)
+        self.num_single_obs = policy_nn.num_single_obs
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        obs = self.normalizer(obs)
+        latent = self.encoder(obs)
+        current_obs = obs[:, -self.num_single_obs :]
+        actor_input = torch.cat((current_obs, latent), dim=-1)
+        return self.actor(actor_input)
+
+
+def _export_full_pipeline_onnx(policy_nn, export_dir: str):
+    """Export ActorCriticAdaptationFuture as ONNX with full pipeline (history_obs → actions)."""
+    os.makedirs(export_dir, exist_ok=True)
+    exporter = _FullPipelineExporter(policy_nn)
+    exporter.to("cpu")
+    exporter.eval()
+
+    dummy_obs = torch.zeros(1, policy_nn.num_actor_obs)
+    onnx_path = os.path.join(export_dir, "policy.onnx")
+    torch.onnx.export(
+        exporter,
+        dummy_obs,
+        onnx_path,
+        export_params=True,
+        opset_version=18,
+        verbose=False,
+        input_names=["obs"],
+        output_names=["actions"],
+        dynamic_axes={},
+    )
+    print(f"[INFO] Exported full-pipeline ONNX: input=({1}, {policy_nn.num_actor_obs}) → output=({1}, {policy_nn.num_actions})")
+
+
+def _export_full_pipeline_jit(policy_nn, export_dir: str):
+    """Export ActorCriticAdaptationFuture as TorchScript JIT with full pipeline."""
+    os.makedirs(export_dir, exist_ok=True)
+    exporter = _FullPipelineExporter(policy_nn)
+    exporter.to("cpu")
+    exporter.eval()
+
+    jit_path = os.path.join(export_dir, "policy.pt")
+    scripted = torch.jit.script(exporter)
+    scripted.save(jit_path)
+    print(f"[INFO] Exported full-pipeline JIT: input=({1}, {policy_nn.num_actor_obs}) → output=({1}, {policy_nn.num_actions})")
+
+
 def main():
     task_name = args_cli.task.split(":")[-1]
 
@@ -417,6 +480,35 @@ def main():
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
     policy = ppo_runner.get_inference_policy(device=actual_env.device)
+
+    # --- Export policy as ONNX / JIT ---
+    try:
+        policy_nn = ppo_runner.alg.policy
+    except AttributeError:
+        policy_nn = ppo_runner.alg.actor_critic
+
+    if hasattr(policy_nn, "actor_obs_normalizer"):
+        normalizer = policy_nn.actor_obs_normalizer
+    elif hasattr(policy_nn, "student_obs_normalizer"):
+        normalizer = policy_nn.student_obs_normalizer
+    else:
+        normalizer = None
+
+    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+
+    # Check if this is an ActorCriticAdaptationFuture model (encoder-based).
+    # The standard exporter only exports policy.actor, which expects
+    # (num_single_obs + latent_dim) input. For deployment, we need the full
+    # pipeline: history_obs(470) -> normalizer -> encoder -> latent -> actor -> actions.
+    from isaaclab_walker.algorithms.rsl_rl import ActorCriticAdaptationFuture
+
+    if isinstance(policy_nn, ActorCriticAdaptationFuture):
+        _export_full_pipeline_onnx(policy_nn, export_model_dir)
+        _export_full_pipeline_jit(policy_nn, export_model_dir)
+    else:
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    print(f"[INFO] Exported policy to: {export_model_dir}")
 
     enable_plotting = False
     try:

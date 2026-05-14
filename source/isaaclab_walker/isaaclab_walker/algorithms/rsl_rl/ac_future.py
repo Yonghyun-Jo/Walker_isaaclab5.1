@@ -60,6 +60,9 @@ class ActorCriticAdaptationFuture(nn.Module):
         target_obs_dim: int = 0,
         target_encoder_hidden_dims=(128,),
         future_dim: int = 30,
+        policy_obs_scale_single: list | None = None,
+        critic_obs_scale: list | None = None,
+        target_obs_scale: list | None = None,
         **kwargs,
     ):
         # Ignore unknown kwargs to stay robust across cfg versions.
@@ -150,6 +153,49 @@ class ActorCriticAdaptationFuture(nn.Module):
         else:
             self.critic_obs_normalizer = torch.nn.Identity()
 
+        # ========== Per-term obs scale buffers ==========
+        history_length = self.num_actor_obs // self.num_single_obs
+        if self.num_actor_obs != history_length * self.num_single_obs:
+            raise ValueError(
+                f"num_actor_obs ({self.num_actor_obs}) must be an integer multiple of "
+                f"num_single_obs ({self.num_single_obs})."
+            )
+
+        if policy_obs_scale_single is None:
+            policy_scale_single_t = torch.ones(self.num_single_obs)
+        else:
+            policy_scale_single_t = torch.as_tensor(policy_obs_scale_single, dtype=torch.float32)
+            if policy_scale_single_t.numel() != self.num_single_obs:
+                raise ValueError(
+                    f"policy_obs_scale_single must have length num_single_obs={self.num_single_obs}, "
+                    f"got {policy_scale_single_t.numel()}."
+                )
+        policy_scale_full = policy_scale_single_t.repeat(history_length)
+        assert policy_scale_full.numel() == self.num_actor_obs
+        self.register_buffer("policy_obs_scale", policy_scale_full)
+
+        if critic_obs_scale is None:
+            critic_scale_t = torch.ones(self.num_critic_obs)
+        else:
+            critic_scale_t = torch.as_tensor(critic_obs_scale, dtype=torch.float32)
+            if critic_scale_t.numel() != self.num_critic_obs:
+                raise ValueError(
+                    f"critic_obs_scale must have length num_critic_obs={self.num_critic_obs}, "
+                    f"got {critic_scale_t.numel()}."
+                )
+        self.register_buffer("critic_obs_scale", critic_scale_t)
+
+        if target_obs_scale is None:
+            target_scale_t = torch.ones(self.target_obs_dim)
+        else:
+            target_scale_t = torch.as_tensor(target_obs_scale, dtype=torch.float32)
+            if target_scale_t.numel() != self.target_obs_dim:
+                raise ValueError(
+                    f"target_obs_scale must have length target_obs_dim={self.target_obs_dim}, "
+                    f"got {target_scale_t.numel()}."
+                )
+        self.register_buffer("target_obs_scale", target_scale_t)
+
         # ========== Action Noise ==========
         self.noise_std_type = noise_std_type
         if self.noise_std_type == "scalar":
@@ -205,6 +251,7 @@ class ActorCriticAdaptationFuture(nn.Module):
     def update_distribution(self, obs):
         observations = self.get_actor_obs(obs)
         observations = self.actor_obs_normalizer(observations)
+        observations = observations * self.policy_obs_scale
         latent = self.encoder(observations)
         current_obs = observations[:, -self.num_single_obs :]
         actor_input = torch.cat((current_obs, latent), dim=-1)
@@ -224,6 +271,7 @@ class ActorCriticAdaptationFuture(nn.Module):
     def act_inference(self, obs):
         observations = self.get_actor_obs(obs)
         observations = self.actor_obs_normalizer(observations)
+        observations = observations * self.policy_obs_scale
         latent = self.encoder(observations)
         current_obs = observations[:, -self.num_single_obs :]
         actor_input = torch.cat((current_obs, latent), dim=-1)
@@ -235,12 +283,14 @@ class ActorCriticAdaptationFuture(nn.Module):
     def evaluate(self, obs, **kwargs):
         critic_observations = self.get_critic_obs(obs)
         critic_observations = self.critic_obs_normalizer(critic_observations)
+        critic_observations = critic_observations * self.critic_obs_scale
         return self.critic(critic_observations)
 
     # ---------------- helpers for PPOFuture ----------------
     def get_latent(self, obs) -> torch.Tensor:
         observations = self.get_actor_obs(obs)
         observations = self.actor_obs_normalizer(observations)
+        observations = observations * self.policy_obs_scale
         return self.encoder(observations)
 
     def split_latent(self, latent: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -256,5 +306,6 @@ class ActorCriticAdaptationFuture(nn.Module):
         """Encode target observation O(t+1) -> future(future_dim)."""
         if target_obs.shape[-1] != self.target_obs_dim:
             raise ValueError(f"target_obs last dim must be {self.target_obs_dim}. Got: {target_obs.shape}")
+        target_obs = target_obs * self.target_obs_scale
         return self.target_encoder(target_obs)
 

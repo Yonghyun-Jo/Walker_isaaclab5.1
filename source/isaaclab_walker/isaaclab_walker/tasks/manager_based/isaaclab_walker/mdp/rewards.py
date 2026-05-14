@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 def feet_air_time(
     env: ManagerBasedRLEnv,
-    command_name: str,
     sensor_cfg: SceneEntityCfg,
     threshold: float,
 ) -> torch.Tensor:
@@ -37,7 +36,7 @@ def feet_air_time(
     that the robot lifts its feet off the ground and takes steps. The reward is computed as the sum of
     the time for which the feet are in the air.
 
-    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
+    Always active regardless of command velocity (no zero-command gate).
     """
     # extract the used quantities (to enable type-hinting)
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
@@ -45,8 +44,6 @@ def feet_air_time(
     first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
     last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
     reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
-    # no reward for zero command
-    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.05
     return reward
 
 
@@ -208,6 +205,40 @@ def feet_ground_parallel(
     return penalty
 
 
+def feet_ground_parallel_swing(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize feet orientation deviation from being parallel to the ground
+    during the swing (no-contact) phase.
+
+    Mirror of `feet_ground_parallel` but the contact mask is inverted: the
+    penalty is summed only over feet that are NOT in contact. Use a smaller
+    weight than the contact-phase term — swing-phase foot rotation is more
+    natural near touchdown / takeoff and an over-aggressive penalty conflicts
+    with ankle torque limits.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset = env.scene[asset_cfg.name]
+
+    contacts = (
+        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0]
+        > threshold
+    )  # (num_envs, num_feet)
+    swing = (~contacts).float()
+
+    feet_quat_w = asset.data.body_quat_w[:, asset_cfg.body_ids]
+    gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=env.device, dtype=torch.float32)
+    gravity_vec = gravity_vec.unsqueeze(0).unsqueeze(0).expand(feet_quat_w.shape[0], feet_quat_w.shape[1], -1)
+    feet_gravity_local = quat_apply_inverse(feet_quat_w, gravity_vec)
+    feet_orientation_error = torch.sum(torch.square(feet_gravity_local[:, :, :2]), dim=2)
+
+    penalty = torch.sum(feet_orientation_error * swing, dim=1)
+    return penalty
+
+
 def feet_parallel(
     env: ManagerBasedRLEnv,
     sensor_cfg: SceneEntityCfg,
@@ -283,6 +314,46 @@ def contact_momentum(
 
     momentum = torch.abs(feet_vel_z * contact_force_z)  # (num_envs, num_feet)
     return torch.sum(momentum, dim=1)
+
+
+def joint_torques_limit_soft_l2(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    soft_ratio: float = 0.8,
+) -> torch.Tensor:
+    """Penalize applied torques that exceed ``soft_ratio * joint_effort_limit``.
+
+    Per-joint normalized quadratic overage:
+        overage_i = max(0, |τ_i| / τ_max_i - soft_ratio)
+        reward    = - Σ_i overage_i²
+
+    Below the soft threshold the term contributes zero, so normal torque usage is
+    unpenalized. The normalization by ``τ_max`` makes each joint contribute on the
+    same scale regardless of motor capacity.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    tau = asset.data.applied_torque[:, asset_cfg.joint_ids]
+    tau_max = asset.data.joint_effort_limits[:, asset_cfg.joint_ids]
+    norm = tau.abs() / tau_max.clamp(min=1e-6)
+    over = (norm - soft_ratio).clamp(min=0.0)
+    return torch.sum(over * over, dim=1)
+
+
+def action_rate_l2_selective(
+    env: "ManagerBasedRLEnv",
+    action_indices: list[int],
+) -> torch.Tensor:
+    """Per-joint action-rate L2 penalty restricted to the given action indices.
+
+    Enables per-joint-group weighting of ``|a_t - a_{t-1}|²``. Real-robot data
+    shows |Δa| varies ~14× across joints (Knee p99≈0.14, HipRoll p99≈0.018),
+    so splitting by group lets jerky joints carry a heavier weight without
+    over-regularizing already-quiet ones.
+    """
+    am = env.action_manager
+    idx = torch.as_tensor(action_indices, device=am.action.device, dtype=torch.long)
+    diff = am.action.index_select(1, idx) - am.prev_action.index_select(1, idx)
+    return torch.sum(diff * diff, dim=1)
 
 
 def action_accel_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -385,6 +456,72 @@ def ref_feet_yaw_mismatch_l2(
     return torch.sum(penalty_per_foot, dim=1)
 
 
+def feet_yaw_symmetry_about_base_l2(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    *,
+    reference_body_name: str = "base_link",
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize asymmetric foot yaw relative to the base heading.
+
+    Computes the midpoint of left-foot yaw and right-foot yaw, then penalizes
+    the angular difference between that midpoint and the base (reference) yaw.
+    When both feet are symmetrically splayed about the base heading, the penalty is zero.
+
+    Requires exactly 2 feet in asset_cfg.body_ids (L then R, preserve_order=True).
+    Contact-gated: penalty is applied only when both feet are in contact.
+
+    Args:
+        env: RL environment.
+        sensor_cfg: Contact sensor config for feet (must resolve 2 bodies).
+        asset_cfg: Robot config for feet bodies (must resolve 2 bodies, L then R).
+        reference_body_name: Body name for the base/pelvis heading reference.
+        threshold: Contact force threshold (N).
+
+    Returns:
+        (num_envs,) penalty.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset = env.scene[asset_cfg.name]
+
+    # Contact gating: both feet must be in contact
+    contacts = (
+        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > threshold
+    )  # (num_envs, 2)
+    both_contact = contacts[:, 0] & contacts[:, 1]  # (num_envs,)
+
+    # Resolve reference body
+    ref_ids, _ = asset.find_bodies(reference_body_name, preserve_order=True)
+    ref_id = int(ref_ids[0])
+
+    # Quaternions: Isaac Sim uses (w, x, y, z) but internal storage is (x, y, z, w)
+    feet_quat_w = asset.data.body_quat_w[:, asset_cfg.body_ids]  # (num_envs, 2, 4)
+    ref_quat_w = asset.data.body_quat_w[:, ref_id, :]  # (num_envs, 4)
+
+    # Extract yaw from quaternion (x, y, z, w ordering)
+    def _yaw(q):
+        return torch.atan2(
+            2.0 * (q[..., 3] * q[..., 2] + q[..., 0] * q[..., 1]),
+            1.0 - 2.0 * (q[..., 1] ** 2 + q[..., 2] ** 2),
+        )
+
+    left_yaw = _yaw(feet_quat_w[:, 0])   # (num_envs,)
+    right_yaw = _yaw(feet_quat_w[:, 1])   # (num_envs,)
+    base_yaw = _yaw(ref_quat_w)           # (num_envs,)
+
+    # Midpoint of left and right foot yaw (circular mean of 2 angles)
+    # Use atan2(sin, cos) to handle wrapping correctly
+    mid_yaw = torch.atan2(
+        torch.sin(left_yaw - base_yaw) + torch.sin(right_yaw - base_yaw),
+        torch.cos(left_yaw - base_yaw) + torch.cos(right_yaw - base_yaw),
+    )  # angle of midpoint relative to base_yaw; if symmetric, this is ~0
+
+    penalty = torch.square(mid_yaw) * both_contact.float()
+    return penalty
+
+
 def _tocabi_compute_cmd_and_body_vel(
     env: ManagerBasedRLEnv,
     *,
@@ -409,7 +546,7 @@ def _tocabi_compute_feet_yaw_rel_and_stance_metrics(
     sensor_cfg: SceneEntityCfg,
     contact_threshold: float,
     stance_width_m: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute yaw_rel(foot vs base) and simple stance metrics in yaw-only base frame.
 
     Frames:
@@ -422,6 +559,7 @@ def _tocabi_compute_feet_yaw_rel_and_stance_metrics(
         x_mid: (num_envs,) midpoint x in yaw-only base frame.
         y_mid: (num_envs,) midpoint y in yaw-only base frame.
         y_sep: (num_envs,) absolute lateral separation in yaw-only base frame.
+        x_sep: (num_envs,) absolute longitudinal separation in yaw-only base frame.
         both_in_contact: (num_envs,) True if both feet have Fz > contact_threshold.
     """
     body_ids = sensor_cfg.body_ids
@@ -463,8 +601,9 @@ def _tocabi_compute_feet_yaw_rel_and_stance_metrics(
     x_mid = 0.5 * (x_r[:, 0] + x_r[:, 1])
     y_mid = 0.5 * (y_r[:, 0] + y_r[:, 1])
     y_sep = torch.abs(y_r[:, 0] - y_r[:, 1])
+    x_sep = torch.abs(x_r[:, 0] - x_r[:, 1])
 
-    return yaw_rel, x_mid, y_mid, y_sep, both_in_contact
+    return yaw_rel, x_mid, y_mid, y_sep, x_sep, both_in_contact
 
 def feet_air_time_biped(
     env: ManagerBasedRLEnv,
@@ -478,7 +617,13 @@ def feet_air_time_biped(
     yaw_threshold_deg: float = 10.0,
     pos_threshold_m: float = 0.01,
     stance_width_m: float = 0.20,
+    x_sep_target_m: float = 0.0,
     stop_cmd_vel_max: float = 0.05,
+    # Schedule gate (shared with contact_schedule / swing_clearance) for grace wind-down and push recovery.
+    cmd_zero_max: float = 1.0e-3,
+    grace_steps: int = 0,
+    push_suppress_threshold: float = 0.0,
+    push_activates: bool = False,
 ) -> torch.Tensor:
     """Reward air time when walking, reward contact time when standing (biped version).
 
@@ -544,7 +689,19 @@ def feet_air_time_biped(
         yaw_threshold_deg=yaw_threshold_deg,
         pos_threshold_m=pos_threshold_m,
         stance_width_m=stance_width_m,
+        x_sep_target_m=x_sep_target_m,
     )
+    # Force walking branch while schedule is active (grace wind-down / push recovery),
+    # so a sudden cmd→0 still produces a few more forced steps before stance lock-in.
+    schedule_active = _tocabi_is_schedule_active_from_cmd(
+        env,
+        command_name=command_name,
+        cmd_zero_max=cmd_zero_max,
+        grace_steps=grace_steps,
+        push_suppress_threshold=push_suppress_threshold,
+        push_activates=push_activates,
+    )
+    is_walking_like_env = is_walking_like_env | schedule_active
     num_feet = current_air_time.shape[1]
     is_walking = is_walking_like_env.unsqueeze(1).expand(-1, num_feet)  # (num_envs, num_feet)
 
@@ -574,6 +731,7 @@ def low_speed_feet_alignment_penalty(
     yaw_threshold_deg: float = 10.0,
     pos_threshold_m: float = 0.01,
     stance_width_m: float = 0.20,
+    x_sep_target_m: float = 0.0,
     contact_threshold: float = 5.0,
     # Optional scaling
     yaw_scale: float = 1.0,
@@ -595,6 +753,8 @@ def low_speed_feet_alignment_penalty(
     Penalty (continuous, thresholded):
         - yaw_err: sum over feet of relu(|yaw_rel| - yaw_th)
         - pos_err: relu(mid_err - pos_threshold_m) + relu(width_err - pos_threshold_m)
+                   + relu(x_sep_err - pos_threshold_m)
+          where x_sep_err = ||x_L - x_R| - x_sep_target_m| (longitudinal stance lock).
 
     Returns:
         Non-negative penalty tensor of shape (num_envs,). Use a negative weight in the reward config.
@@ -616,7 +776,7 @@ def low_speed_feet_alignment_penalty(
     is_low_speed = torch.logical_and(cmd_vel <= cmd_zero_max, body_vel <= body_vel_max)
 
     # --- alignment metrics (yaw-only base frame) ---
-    yaw_rel, x_mid, y_mid, y_sep, both_in_contact = _tocabi_compute_feet_yaw_rel_and_stance_metrics(
+    yaw_rel, x_mid, y_mid, y_sep, x_sep, both_in_contact = _tocabi_compute_feet_yaw_rel_and_stance_metrics(
         env,
         asset=asset,
         sensor_cfg=sensor_cfg,
@@ -633,7 +793,12 @@ def low_speed_feet_alignment_penalty(
 
     mid_err = torch.sqrt(x_mid * x_mid + y_mid * y_mid)  # (num_envs,)
     width_err = torch.abs(y_sep - stance_width_m)  # (num_envs,)
-    pos_err = torch.clamp(mid_err - pos_threshold_m, min=0.0) + torch.clamp(width_err - pos_threshold_m, min=0.0)
+    x_sep_err = torch.abs(x_sep - x_sep_target_m)  # (num_envs,)
+    pos_err = (
+        torch.clamp(mid_err - pos_threshold_m, min=0.0)
+        + torch.clamp(width_err - pos_threshold_m, min=0.0)
+        + torch.clamp(x_sep_err - pos_threshold_m, min=0.0)
+    )
 
     penalty = yaw_scale * yaw_err + pos_scale * pos_err
     return torch.where(is_low_speed, penalty, torch.zeros_like(penalty))
@@ -880,6 +1045,10 @@ def tocabi_should_walk_stop_align(
     yaw_threshold_deg: float = 10.0,
     pos_threshold_m: float = 0.01,
     stance_width_m: float = 0.20,
+    # Longitudinal foot separation target (parallel-stance lock-in).
+    # |x_L - x_R| should fall within `pos_threshold_m` of this value at stop.
+    # Default 0.0 = both feet on the same x-line (no staggered stance).
+    x_sep_target_m: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return a simple walking/standing switch specialized for stop alignment.
 
@@ -895,7 +1064,7 @@ def tocabi_should_walk_stop_align(
     cmd_vel, body_vel = _tocabi_compute_cmd_and_body_vel(env, asset=asset, command_name=command_name)
 
     # --- compute yaw/stance metrics (yaw-only base frame) ---
-    yaw_rel, x_mid, y_mid, y_sep, both_in_contact = _tocabi_compute_feet_yaw_rel_and_stance_metrics(
+    yaw_rel, x_mid, y_mid, y_sep, x_sep, both_in_contact = _tocabi_compute_feet_yaw_rel_and_stance_metrics(
         env,
         asset=asset,
         sensor_cfg=sensor_cfg,
@@ -916,7 +1085,10 @@ def tocabi_should_walk_stop_align(
 
     mid_err = torch.sqrt(x_mid * x_mid + y_mid * y_mid)
     width_err = torch.abs(y_sep - stance_width_m)
-    pos_bad = torch.logical_or(mid_err > pos_threshold_m, width_err > pos_threshold_m)
+    x_sep_err = torch.abs(x_sep - x_sep_target_m)
+    pos_bad = mid_err > pos_threshold_m
+    pos_bad = torch.logical_or(pos_bad, width_err > pos_threshold_m)
+    pos_bad = torch.logical_or(pos_bad, x_sep_err > pos_threshold_m)
 
     align_bad = torch.logical_or(yaw_bad, pos_bad)
     is_aligned = torch.logical_and(~align_bad, both_in_contact)
@@ -947,11 +1119,113 @@ def _tocabi_is_schedule_active_from_cmd(
     *,
     command_name: str,
     cmd_zero_max: float,
+    grace_steps: int = 0,
+    push_suppress_threshold: float = 0.0,
+    push_activates: bool = False,
+    asset_cfg_name: str = "robot",
+    # --- optional misalignment trigger (stop-intent AND align_bad) ---
+    misalign_activates: bool = False,
+    align_sensor_cfg: SceneEntityCfg | None = None,
+    align_asset_cfg: SceneEntityCfg | None = None,
+    stop_cmd_vel_max: float = 0.05,
+    yaw_threshold_deg: float = 10.0,
+    pos_threshold_m: float = 0.01,
+    stance_width_m: float = 0.20,
+    x_sep_target_m: float = 0.0,
+    align_contact_threshold: float = 5.0,
 ) -> torch.Tensor:
-    """Return (num_envs,) bool: schedule active only when commanded to move (cmd-only gate)."""
+    """Return (num_envs,) bool: schedule active based on command, push, and (optionally) feet-misalign state.
+
+    Two push modes controlled by `push_activates`:
+      - False (suppress): schedule OFF during push. Use for swing_clearance
+        so the robot isn't penalized for low feet during recovery.
+      - True (activate): schedule ON during push even if vel=0. Use for
+        contact_schedule so the robot is rewarded for stepping to recover balance.
+
+    With `misalign_activates=True` and `align_sensor_cfg`/`align_asset_cfg` provided,
+    the schedule ALSO activates when (cmd ~ 0) AND feet alignment is bad
+    (yaw or stance deviation beyond thresholds). This forces the walking branch
+    while the robot is still trying to settle into a parallel stance, so it keeps
+    stepping until both feet align — instead of locking in a misaligned stance.
+
+    With grace_steps > 0, the schedule stays active for that many steps after
+    the trigger disappears. Grace countdown is frozen during push.
+    """
+    # update persistent push force (once per step, guarded internally)
+    from .events import _step_persistent_push_force
+    _step_persistent_push_force(env, asset_cfg_name=asset_cfg_name)
+
     cmd = env.command_manager.get_command(command_name)  # (num_envs, 3)
     cmd_vel = torch.linalg.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])
-    return cmd_vel > cmd_zero_max
+    cmd_active = cmd_vel > cmd_zero_max
+
+    # --- detect push ---
+    pushed = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+    if push_suppress_threshold > 0.0:
+        force_buf = env.__dict__.get("_persistent_push_force", None)
+        if force_buf is not None:
+            force_mag = torch.linalg.norm(force_buf, dim=1)  # (N,)
+            pushed = force_mag > push_suppress_threshold
+
+    if push_activates:
+        # push ACTIVATES schedule: cmd OR pushed
+        trigger = cmd_active | pushed
+    else:
+        # push SUPPRESSES schedule: cmd AND NOT pushed
+        trigger = cmd_active & ~pushed
+
+    # --- optional misalignment trigger ---
+    # When commanded to stop but feet aren't in the desired parallel stance,
+    # treat the env as "still walking" so contact-schedule / swing-clearance
+    # keep rewarding stepping until alignment is reached.
+    if misalign_activates and align_sensor_cfg is not None and align_asset_cfg is not None:
+        asset: Articulation = env.scene[align_asset_cfg.name]
+        yaw_rel, x_mid, y_mid, y_sep, x_sep, _ = _tocabi_compute_feet_yaw_rel_and_stance_metrics(
+            env,
+            asset=asset,
+            sensor_cfg=align_sensor_cfg,
+            contact_threshold=align_contact_threshold,
+            stance_width_m=stance_width_m,
+        )
+        yaw_th = (yaw_threshold_deg * torch.pi) / 180.0
+        yaw_bad = torch.any(torch.abs(yaw_rel) > yaw_th, dim=1)
+        mid_err = torch.sqrt(x_mid * x_mid + y_mid * y_mid)
+        width_err = torch.abs(y_sep - stance_width_m)
+        x_sep_err = torch.abs(x_sep - x_sep_target_m)
+        pos_bad = mid_err > pos_threshold_m
+        pos_bad = torch.logical_or(pos_bad, width_err > pos_threshold_m)
+        pos_bad = torch.logical_or(pos_bad, x_sep_err > pos_threshold_m)
+        align_bad = torch.logical_or(yaw_bad, pos_bad)
+        stop_intent = cmd_vel < stop_cmd_vel_max
+        misalign_trigger = torch.logical_and(stop_intent, align_bad)
+        # During push we still want push_activates / push_suppress semantics to
+        # win: don't add extra activation while pushed (keeps suppress-mode safe).
+        misalign_trigger = misalign_trigger & ~pushed
+        trigger = trigger | misalign_trigger
+
+    if grace_steps <= 0:
+        return trigger
+
+    # unique key per mode to avoid collision between activate/suppress callers
+    grace_key = "_schedule_grace_countdown_act" if push_activates else "_schedule_grace_countdown_sup"
+    if grace_key not in env.__dict__:
+        env.__dict__[grace_key] = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+    countdown: torch.Tensor = env.__dict__[grace_key]
+
+    # reset on episode start
+    ep_start = env.episode_length_buf == 0
+    countdown[ep_start] = 0
+
+    # trigger active → reset countdown to full grace period
+    countdown[trigger] = grace_steps
+    # trigger inactive & not pushed → decrement countdown
+    inactive = ~trigger & ~pushed & (countdown > 0)
+    countdown[inactive] -= 1
+    # push active & not trigger → freeze countdown (don't decrement)
+    # so grace resumes after push ends
+
+    env.__dict__[grace_key] = countdown
+    return trigger | (~pushed & (countdown > 0))
 
 
 def _tocabi_desired_contact_biped_ds(
@@ -997,11 +1271,26 @@ def contact_schedule_reward_biped_ds(
     ds_ratio: float = 0.2,
     contact_threshold: float = 5.0,
     cmd_zero_max: float = 1.0e-3,
+    grace_steps: int = 0,
+    push_suppress_threshold: float = 0.0,
+    push_activates: bool = False,
+    # --- optional misalignment trigger ---
+    misalign_activates: bool = False,
+    asset_cfg: SceneEntityCfg | None = None,
+    stop_cmd_vel_max: float = 0.05,
+    yaw_threshold_deg: float = 10.0,
+    pos_threshold_m: float = 0.01,
+    stance_width_m: float = 0.20,
+    x_sep_target_m: float = 0.0,
 ) -> torch.Tensor:
     """Reward matching a phase-based biped contact schedule (with DS), active only when walking.
 
     - standing(cmd~0): OFF (reward=0) to avoid in-place marching.
     - walking(cmd>0): enforce alternating contacts with explicit double-support windows.
+    - pushed(|force| > threshold): behavior depends on push_activates.
+    - misaligned at stop (`misalign_activates=True`): schedule stays ON while
+      feet aren't in the desired parallel stance, so the robot keeps stepping
+      until alignment is reached.
 
     Args:
         command_name: Name of command term (e.g., "base_velocity").
@@ -1010,11 +1299,39 @@ def contact_schedule_reward_biped_ds(
         ds_ratio: Total double-support fraction per cycle (0~0.49).
         contact_threshold: Threshold on Fz (N) to decide contact.
         cmd_zero_max: Command magnitude below which schedule is disabled.
+        grace_steps: Steps to keep schedule active after command drops to zero.
+        push_suppress_threshold: Force magnitude (N) above which push is detected.
+        push_activates: If True, push activates schedule (for recovery stepping).
+            If False, push suppresses schedule.
+        misalign_activates: If True (and asset_cfg given), activate schedule when
+            cmd~0 but feet alignment is bad.
+        asset_cfg: Robot asset cfg (required for misalign_activates).
+        stop_cmd_vel_max: Command magnitude below which we consider stop intent
+            (used by misalign trigger).
+        yaw_threshold_deg, pos_threshold_m, stance_width_m, x_sep_target_m:
+            Same alignment thresholds as `feet_air_time_biped` /
+            `tocabi_should_walk_stop_align`.
 
     Returns:
         (num_envs,) reward in [0,1] (approximately).
     """
-    is_active = _tocabi_is_schedule_active_from_cmd(env, command_name=command_name, cmd_zero_max=cmd_zero_max)
+    is_active = _tocabi_is_schedule_active_from_cmd(
+        env,
+        command_name=command_name,
+        cmd_zero_max=cmd_zero_max,
+        grace_steps=grace_steps,
+        push_suppress_threshold=push_suppress_threshold,
+        push_activates=push_activates,
+        misalign_activates=misalign_activates,
+        align_sensor_cfg=sensor_cfg if misalign_activates else None,
+        align_asset_cfg=asset_cfg if misalign_activates else None,
+        stop_cmd_vel_max=stop_cmd_vel_max,
+        yaw_threshold_deg=yaw_threshold_deg,
+        pos_threshold_m=pos_threshold_m,
+        stance_width_m=stance_width_m,
+        x_sep_target_m=x_sep_target_m,
+        align_contact_threshold=contact_threshold,
+    )
     if not torch.any(is_active):
         return torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
 
@@ -1050,19 +1367,48 @@ def swing_clearance_min_profile_penalty(
     period_steps: int,
     ds_ratio: float = 0.2,
     clearance_height: float = 0.15,
+    profile_offset: float = 0.0,
     contact_threshold: float = 5.0,
     cmd_zero_max: float = 1.0e-3,
+    grace_steps: int = 0,
+    push_suppress_threshold: float = 0.0,
+    push_activates: bool = False,
+    # --- optional misalignment trigger ---
+    misalign_activates: bool = False,
+    stop_cmd_vel_max: float = 0.05,
+    yaw_threshold_deg: float = 10.0,
+    pos_threshold_m: float = 0.01,
+    stance_width_m: float = 0.20,
+    x_sep_target_m: float = 0.0,
 ) -> torch.Tensor:
-    """Penalty if swing-foot clearance is below a reference profile (phase-based), active only when walking.
+    """Penalty if swing-foot clearance is below a quintic polynomial reference, active only when walking.
 
     Ground reference (no terrain query):
       Use per-foot stance height `stance_z` captured when the foot is in contact.
       clearance := z_now - stance_z
 
-    Reference profile:
-      z_ref(phi) = clearance_height * sin(pi * phi), phi ∈ [0,1]
+    Reference profile (quintic polynomial, Gu et al. 2024):
+      f(t) = sum a_k t^k,  (a0..a5) = (0, 0.1, 5.0, -18.8, 12.0, 9.6),  T=0.5s
+      Peak height = 0.10 m at phi=0.5, linearly scaled by `clearance_height`.
+      C² smooth bell shape: foot below profile → penalty, above → free.
     """
-    is_active = _tocabi_is_schedule_active_from_cmd(env, command_name=command_name, cmd_zero_max=cmd_zero_max)
+    is_active = _tocabi_is_schedule_active_from_cmd(
+        env,
+        command_name=command_name,
+        cmd_zero_max=cmd_zero_max,
+        grace_steps=grace_steps,
+        push_suppress_threshold=push_suppress_threshold,
+        push_activates=push_activates,
+        misalign_activates=misalign_activates,
+        align_sensor_cfg=sensor_cfg if misalign_activates else None,
+        align_asset_cfg=asset_cfg if misalign_activates else None,
+        stop_cmd_vel_max=stop_cmd_vel_max,
+        yaw_threshold_deg=yaw_threshold_deg,
+        pos_threshold_m=pos_threshold_m,
+        stance_width_m=stance_width_m,
+        x_sep_target_m=x_sep_target_m,
+        align_contact_threshold=contact_threshold,
+    )
     if not torch.any(is_active):
         return torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
 
@@ -1111,10 +1457,47 @@ def swing_clearance_min_profile_penalty(
     phi_l = torch.clamp((phase01 - (0.5 + h)) / denom, 0.0, 1.0)
     phi_local = torch.stack([phi_l, phi_r], dim=1)  # (N,2) [L,R]
 
-    z_ref = float(clearance_height) * torch.sin(torch.pi * phi_local)  # (N,2)
-    per_foot = torch.square(torch.clamp(z_ref - clearance, min=0.0)) * swing_mask.to(torch.float32)
+    # Quintic polynomial trajectory (DWL paper, Gu et al. 2024).
+    # f(t) = sum a_k t^k, peak = 0.10 m at t=T/2, scaled by clearance_height.
+    _coeffs = (0.0, 0.1, 5.0, -18.8, 12.0, 9.6)
+    _T = 0.5
+    t_sec = phi_local * _T
+    z_ref = torch.zeros_like(phi_local)
+    for k, a in enumerate(_coeffs):
+        z_ref = z_ref + a * (t_sec ** k)
+    z_ref = z_ref * (float(clearance_height) / 0.10)  # scale to clearance_height
+    z_ref = torch.clamp(z_ref - float(profile_offset), min=0.0)  # (N,2)
+    per_foot = torch.clamp(z_ref - clearance, min=0.0) * swing_mask.to(torch.float32)
     penalty = torch.mean(per_foot, dim=1)
     return torch.where(is_active, penalty, torch.zeros_like(penalty))
+
+
+def contact_force_limit_soft_penalty(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    robot_mass: float = 100.0,
+    safety_factor: float = 1.2,
+    std: float = 200.0,
+) -> torch.Tensor:
+    """Soft penalty when contact force exceeds safety_factor * mg.
+
+    Uses a Gaussian kernel so that small exceedances produce near-zero penalty while
+    large exceedances saturate at 1.0 per foot:
+        threshold = safety_factor * robot_mass * g
+        excess    = max(0, |F| - threshold)
+        penalty_i = 1 - exp(-excess^2 / std^2)
+
+    Returns:
+        (num_envs,) sum of per-foot penalties.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    current_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
+    force_magnitudes = torch.norm(current_forces, dim=-1)  # (num_envs, num_feet)
+    threshold = safety_factor * robot_mass * 9.81
+    excess_forces = torch.clamp(force_magnitudes - threshold, min=0.0)
+    foot_penalties = torch.exp(-(excess_forces ** 2) / (std ** 2))
+    foot_penalties = torch.where(excess_forces > 0, 1.0 - foot_penalties, torch.zeros_like(foot_penalties))
+    return torch.sum(foot_penalties, dim=1)
 
 
 def bio_mimetic_soft_hard_constraint(
@@ -1203,6 +1586,81 @@ def bio_mimetic_soft_hard_constraint(
         violation = torch.clamp(error - float(deadband), min=0.0)
         x = torch.clamp(float(stiffness) * violation, max=float(exp_clip))
         per_joint_penalty = torch.expm1(x)
+    return torch.sum(per_joint_penalty, dim=1)
+
+
+def bio_mimetic_soft_hard_constraint_conditional(
+    env: "ManagerBasedRLEnv",
+    *,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_name: str = "base_velocity",
+    command_index: int = 2,
+    command_threshold: float = 0.1,
+    base_vel_index: int = 2,
+    base_vel_threshold: float = 0.07,
+    target_offset: float | torch.Tensor = 0.0,
+    deadband_pos_active: float = 0.35,
+    deadband_neg_active: float = 0.35,
+    deadband_pos_inactive: float = 0.0,
+    deadband_neg_inactive: float = 0.0,
+    stiffness_pos: float = 1.5,
+    stiffness_neg: float = 1.5,
+    exp_clip: float = 50.0,
+) -> torch.Tensor:
+    """Bio-mimetic soft-hard constraint with command/velocity-conditional asymmetric deadband.
+
+    Active (deadband relaxed) when EITHER:
+      1. |command[command_index]| > command_threshold  (명령이 켜져 있을 때)
+      2. |base_vel[base_vel_index]| > base_vel_threshold  (외력 등으로 실제 속도가 발생했을 때)
+
+    Args:
+        command_index: Index into the command vector. 0=vx, 1=vy, 2=ang_z.
+        command_threshold: Absolute threshold for the command to be considered "active".
+        base_vel_index: Index into base velocity. 0=vx, 1=vy for lin_vel; 2=ang_z for ang_vel.
+        base_vel_threshold: Actual base velocity threshold to activate deadband.
+        deadband_pos_active: Positive deadband when active.
+        deadband_neg_active: Negative deadband when active.
+        deadband_pos_inactive: Positive deadband when inactive.
+        deadband_neg_inactive: Negative deadband when inactive.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+    if joint_ids is None:
+        raise RuntimeError("SceneEntityCfg.joint_ids is None.")
+
+    # Condition 1: command active
+    cmd = env.command_manager.get_command(command_name)  # (num_envs, 3)
+    cmd_active = torch.abs(cmd[:, command_index]) > command_threshold
+
+    # Condition 2: actual base velocity exceeds threshold (외력, 미끄러짐 등)
+    if base_vel_index < 2:
+        # linear velocity (x or y) in base frame
+        actual_vel = asset.data.root_lin_vel_b[:, base_vel_index]
+    else:
+        # angular velocity (z) in world frame
+        actual_vel = asset.data.root_ang_vel_w[:, 2]
+    vel_active = torch.abs(actual_vel) > base_vel_threshold
+
+    # Either condition → activate deadband
+    active = cmd_active | vel_active  # (num_envs,)
+
+    # Per-env asymmetric deadbands: (num_envs, 1)
+    db_pos = torch.where(active, deadband_pos_active, deadband_pos_inactive).unsqueeze(1)
+    db_neg = torch.where(active, deadband_neg_active, deadband_neg_inactive).unsqueeze(1)
+
+    q = asset.data.joint_pos[:, joint_ids]
+    q_default = asset.data.default_joint_pos[:, joint_ids]
+    offset_t = torch.as_tensor(target_offset, device=q.device, dtype=q.dtype)
+    q_target = q_default + offset_t
+
+    e = q - q_target
+    v_pos = torch.clamp(e - db_pos, min=0.0)
+    v_neg = torch.clamp((-e) - db_neg, min=0.0)
+
+    x_pos = torch.clamp(stiffness_pos * v_pos, max=exp_clip)
+    x_neg = torch.clamp(stiffness_neg * v_neg, max=exp_clip)
+    per_joint_penalty = torch.expm1(x_pos) + torch.expm1(x_neg)
+
     return torch.sum(per_joint_penalty, dim=1)
 
 
@@ -1329,12 +1787,14 @@ def spring_compliance_pos_match_reward(
     """Spring-like compliance penalty (pos-match) for impact mitigation.
 
     On first contact per foot, captures the foot z (relative to a reference body, default: base_link)
-    as z_d. While in contact, allows compliant deviation proportional to excess vertical force:
-        z_target = z_d + max(Fz - Fz0, 0) / K
+    as z_d. While in contact, allows bidirectional compliant deviation proportional to vertical
+    force delta from the nominal support level:
+        z_target = z_d + (Fz - Fz0) / K
         cost     = (z - z_target)^2
 
-    Fz0 is a baseline deadzone (nominal mg split over contacting feet) to avoid penalizing
-    normal support during double support.
+    Fz0 is the nominal per-foot support force (mg split over contacting feet, scaled by
+    baseline_margin). Fz > Fz0 lets z_target rise (impact loading / CoM drop); Fz < Fz0 lets it
+    fall (push-off / CoM bounce-up), so the reward no longer penalizes the rebound phase.
 
     Gate: active only when walking (cmd_vel >= cmd_vel_eps OR body_vel > velocity_threshold).
 
@@ -1420,16 +1880,92 @@ def spring_compliance_pos_match_reward(
 
     z_d_eff = torch.where(z_d_valid, z_d, rel_z)
 
-    # Baseline deadzone: nominal mg split over contacting feet
+    # Baseline force: nominal mg split over contacting feet.
+    # Bidirectional (no clamp): Fz < Fz0 lets z_target dip below z_d (foot pushed down relative to base
+    # as CoM rises during push-off), Fz > Fz0 lets it rise above (CoM drops at impact loading).
     n_contact = torch.clamp(in_contact.sum(dim=1), min=1).to(fz_pos.dtype)  # (N,)
     fz0 = (baseline_margin * robot_mass * gravity / n_contact).unsqueeze(1)  # (N, 1)
-    fz_excess = torch.clamp(fz_pos - fz0, min=0.0)
+    fz_delta = fz_pos - fz0
 
     # Spring compliance target and squared cost
-    z_target = z_d_eff + fz_excess / k_spring
+    z_target = z_d_eff + fz_delta / k_spring
     err = rel_z - z_target
     per_foot = torch.square(err)
     gate = torch.logical_and(in_contact, should_walk.unsqueeze(1))
     per_foot = torch.where(gate, per_foot, torch.zeros_like(per_foot))
 
     return torch.mean(per_foot, dim=1)
+
+
+def stand_still_joint_deviation_l1(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    command_threshold: float = 0.06,
+    velocity_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    standing_pose: dict[str, float] | None = None,
+) -> torch.Tensor:
+    """Penalize joint deviations when the robot should be standing still.
+
+    Unlike the upstream version:
+      - Checks actual base velocity (not just command)
+      - Supports a custom standing pose instead of default_joint_pos
+
+    The penalty is only active when BOTH:
+      - the velocity command is small (norm < command_threshold)
+      - the actual base linear velocity is small (norm < velocity_threshold)
+    """
+    command = env.command_manager.get_command(command_name)
+    cmd_small = torch.norm(command[:, :2], dim=1) < command_threshold
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    base_vel = asset.data.root_lin_vel_b[:, :2]
+    vel_small = torch.norm(base_vel, dim=1) < velocity_threshold
+
+    gate = (cmd_small & vel_small).float()
+
+    if standing_pose is not None:
+        cache_key = "_stand_still_standing_target"
+        if cache_key not in env.__dict__:
+            target = asset.data.default_joint_pos.clone()
+            for joint_name, value in standing_pose.items():
+                joint_ids, _ = asset.find_joints(joint_name)
+                if joint_ids:
+                    target[:, joint_ids[0]] = value
+            env.__dict__[cache_key] = target
+        target = env.__dict__[cache_key]
+        deviation = torch.sum(torch.abs(asset.data.joint_pos - target), dim=1)
+    else:
+        deviation = torch.sum(
+            torch.abs(asset.data.joint_pos - asset.data.default_joint_pos), dim=1
+        )
+
+    return deviation * gate
+
+
+def base_height_below_target_l2(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    # One-sided L2: returns 0 when h >= target, (target-h)^2 when h < target.
+    # Lets weight be increased aggressively without punishing upward overshoots,
+    # and brief balance-recovery dips only incur penalty proportional to depth.
+    asset: Articulation = env.scene[asset_cfg.name]
+    h = asset.data.root_pos_w[:, 2]
+    deficit = torch.clamp(target_height - h, min=0.0)
+    return torch.square(deficit)
+
+
+def base_height_target_exp(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    std: float = 0.03,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    # exp(-((h - target)/std)^2) in (0, 1]. Use with POSITIVE weight.
+    # Gradient vanishes when far from target -> a falling robot gets no
+    # incentive to "fall further to minimize |penalty|" (pure-L2 failure mode).
+    asset: Articulation = env.scene[asset_cfg.name]
+    h = asset.data.root_pos_w[:, 2]
+    return torch.exp(-torch.square((h - target_height) / std))
